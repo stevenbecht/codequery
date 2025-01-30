@@ -1,0 +1,168 @@
+CODE QUERY (CQ)
+
+A command-line tool for embedding and searching code snippets, leveraging Qdrant
+(https://qdrant.tech/) for vector similarity search and OpenAI's embeddings for
+natural language queries.
+
+OVERVIEW
+========
+"cq" helps you:
+1) Embed your local codebase into Qdrant
+2) Search for relevant code snippets by natural language query
+3) Chat with context (pull relevant code snippets and pass them to OpenAI ChatCompletion)
+4) Inspect stats from Qdrant
+5) Check or apply code diffs (in XML) to your local codebase
+
+FEATURES
+========
+- Incremental Embedding: Index new or changed code snippets only, speeding up repeated embeddings.
+- Language-Specific Parsing:
+  - Python files use an AST and get chunked by function definitions.
+  - JavaScript, TypeScript, and PHP files get chunked by line blocks.
+- Powerful Search: Use a similarity threshold, list only matching file paths, or output entire matching snippets.
+- XML-Based Diff: Propose code changes in XML, then validate or apply them locally.
+- Environment-Based Config: Set essential variables (like OPENAI_API_KEY and QDRANT_HOST) via a .env file or your shell environment.
+
+INSTALLATION
+============
+1) Clone the repository:
+   git clone https://github.com/stevenbecht/codequery
+   cd yourrepo
+
+2) Install dependencies:
+   - Needs Python 3.7+ (the code references Python 3.11, but 3.7+ should generally work).
+   - Install via:
+       pip install -e .
+     This creates an editable install and registers the "cq" console command.
+
+3) Run Qdrant (if not already):
+   - For local Docker-based usage:
+       docker run -p 6333:6333 qdrant/qdrant
+   - Or use your included script:
+       ./run_qdrant.sh
+   - Make sure Qdrant is reachable on the host/port in your environment (default 127.0.0.1:6333).
+
+4) Configure environment variables (in a .env file or your shell):
+   - OPENAI_API_KEY (required)
+   - OPENAI_EMBED_MODEL (default "text-embedding-ada-002")
+   - OPENAI_CHAT_MODEL (default "gpt-3.5-turbo")
+   - QDRANT_HOST (default 127.0.0.1)
+   - QDRANT_PORT (default 6333)
+   - QDRANT_COLLECTION (default "codebase_functions")
+
+USAGE
+=====
+After installation, run:
+   cq --help
+
+This shows top-level usage and subcommands. The main subcommands are:
+1) embed
+2) search
+3) chat
+4) stats
+5) diff
+
+1) EMBED
+--------
+Command:
+   cq embed [options]
+
+Embeds your codebase into Qdrant.
+
+Common options:
+- -d, --directories  (one or more directories to embed, default = current dir)
+- --delete           (delete the Qdrant collection before embedding)
+- -r, --recursive    (recursively embed subdirectories)
+- -f, --force        (skip confirmation prompt when deleting)
+- --incremental      (only embed new or changed snippets, skipping unchanged)
+- -v, --verbose      (detailed logs)
+
+Example:
+   cq embed -d . --delete -r --force
+
+2) SEARCH
+---------
+Command:
+   cq search [options]
+
+Searches Qdrant with a natural language query for matching code snippets.
+
+Common options:
+- -q, --query        (text query, required)
+- -n, --num-results  (default = 3)
+- -a, --all          (return up to 1000 matches)
+- -l, --list         (only list file paths with best match scores)
+- -t, --threshold    (score threshold, range 0.0 - 1.0)
+- -x, --xml-output   (output matches in XML)
+- -p, --include-prompt (include recommended LLM prompt before XML)
+- -v, --verbose      (detailed logs)
+
+Example:
+   cq search -q "How to read a file line by line in Python?" -n 5
+
+3) CHAT
+-------
+Command:
+   cq chat [options]
+
+Searches for relevant snippets, then uses OpenAI ChatCompletion to answer with context.
+
+Common options:
+- -q, --query        (your question, required unless using --list-models)
+- -n, --num-results  (default = 3)
+- -m, --model        (override, format "provider:model" e.g. "openai:gpt-4o")
+- --list-models      (list OpenAI models and exit)
+- -v, --verbose      (debug logs)
+- -w, --max-window   (max tokens for code context, default = 3000)
+
+Example:
+   cq chat --model "openai:gpt-4o" -q "Explain how error handling works."
+
+4) STATS
+--------
+Command:
+   cq stats
+
+Retrieves Qdrant stats: total chunks, total tokens, largest chunk, etc.
+
+Common option:
+- -v, --verbose  (more detailed logs during scanning)
+
+Example:
+   cq stats
+
+5) DIFF
+-------
+Command:
+   cq diff [options]
+
+Checks or applies an XML-based diff to your codebase. The diff XML should contain
+<change> blocks specifying file_path, start_line, end_line, and new_code.
+
+Common options:
+- --check-diff   (validate the diff, do not apply)
+- --apply-diff   (apply the diff to your files)
+- --diff-file    (XML file containing the changes)
+- --codebase-dir (root directory for file paths)
+- -v, --verbose  (show lines replaced or lines that would be replaced)
+
+Example:
+   cq diff --check-diff --diff-file proposed_changes.xml --codebase-dir .
+   cq diff --apply-diff --diff-file proposed_changes.xml --codebase-dir .
+
+ADDITIONAL SCRIPTS
+==================
+- run_qdrant.sh   (starts Qdrant locally, e.g. via Docker)
+
+CONTRIBUTING
+============
+1) Fork and branch from "main".
+2) Commit changes (with tests if possible) and push to your fork.
+3) Open a Pull Request. We will review and merge.
+
+TROUBLESHOOTING & TIPS
+======================
+1) Qdrant Connection Errors: ensure Qdrant is running and the host/port match .env
+2) OpenAI Key: you must set OPENAI_API_KEY
+3) Large Files: code automatically splits them into multiple chunks
+4) Incremental Embedding: use --incremental to skip re-embedding unchanged code

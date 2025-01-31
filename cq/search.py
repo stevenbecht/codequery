@@ -81,7 +81,12 @@ def chat_with_context(
     reasoning_effort: str = "medium"
 ):
     """Search, build context, and send to OpenAI ChatCompletion."""
+    import time
+    
+    # Time the search operation
+    search_start = time.time()
     results = search_codebase_in_qdrant(query, collection_name, qdrant_client, embed_model, top_k, verbose)
+    search_time = time.time() - search_start
 
     if verbose:
         logging.debug("=== Qdrant Search Results for Chat (Verbose) ===")
@@ -109,6 +114,9 @@ def chat_with_context(
             model=chat_model
         )
 
+    # Time the chat operation
+    chat_start = time.time()
+    
     if chat_model.startswith('o1-'):
         messages = [
             {"role": "user", "content": f"You are a helpful coding assistant. Here is the relevant code:\n{context_text}\n\nUser query: {query}"}
@@ -124,6 +132,10 @@ def chat_with_context(
             messages=messages,
             reasoning_effort=reasoning_effort
         )
+        chat_time = time.time() - chat_start
+        logging.info("\n=== Detailed Timing ===")
+        logging.info(f"Search time: {search_time:.2f} seconds")
+        logging.info(f"Chat time: {chat_time:.2f} seconds")
         return resp["choices"][0]["message"]["content"]
     else:
         messages = [
@@ -140,5 +152,11 @@ def chat_with_context(
 
     # Standard call for non-o3-mini models
     resp = openai.ChatCompletion.create(model=chat_model, messages=messages)
+    chat_time = time.time() - chat_start
+    
+    logging.info("\n=== Detailed Timing ===")
+    logging.info(f"Search time: {search_time:.2f} seconds")
+    logging.info(f"Chat time: {chat_time:.2f} seconds")
+    
     return resp["choices"][0]["message"]["content"]
 # END: cq/search.py

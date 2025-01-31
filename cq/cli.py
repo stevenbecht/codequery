@@ -1,6 +1,7 @@
 import argparse
 import sys
 import logging
+import time
 
 # Note: remove direct import of requests.exceptions.ConnectionError if you want,
 # but it's fine to keep for Qdrant checks:
@@ -277,6 +278,8 @@ def handle_chat(args):
     if stdin_content:
         full_query = f"Here is the content I'm asking about:\n\n{stdin_content}\n\nMy question: {args.query}"
 
+    start_time = time.time()
+    
     answer = chat_with_context(
         query=full_query,
         collection_name=config["qdrant_collection"],
@@ -288,6 +291,12 @@ def handle_chat(args):
         max_context_tokens=args.max_window,
         reasoning_effort=args.reasoning_effort
     )
+    
+    end_time = time.time()
+    total_time = end_time - start_time
+    
+    logging.info("\n=== Query Timing ===")
+    logging.info(f"Total time: {total_time:.2f} seconds")
     logging.info("\n=== ChatGPT Answer ===")
     logging.info(answer)
 

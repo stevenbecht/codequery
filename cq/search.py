@@ -77,7 +77,8 @@ def chat_with_context(
     chat_model: str,
     top_k: int = 3,
     verbose: bool = False,
-    max_context_tokens: int = None
+    max_context_tokens: int = None,
+    reasoning_effort: str = "medium"
 ):
     """Search, build context, and send to OpenAI ChatCompletion."""
     results = search_codebase_in_qdrant(query, collection_name, qdrant_client, embed_model, top_k, verbose)
@@ -112,6 +113,18 @@ def chat_with_context(
         messages = [
             {"role": "user", "content": f"You are a helpful coding assistant. Here is the relevant code:\n{context_text}\n\nUser query: {query}"}
         ]
+    elif chat_model == 'o3-mini':
+        messages = [
+            {"role": "system", "content": "You are a helpful coding assistant."},
+            {"role": "user", "content": f"Relevant code:\n{context_text}\n\nUser query: {query}"}
+        ]
+        # Add reasoning_effort parameter for o3-mini model
+        resp = openai.ChatCompletion.create(
+            model=chat_model,
+            messages=messages,
+            reasoning_effort=reasoning_effort
+        )
+        return resp["choices"][0]["message"]["content"]
     else:
         messages = [
             {"role": "system", "content": "You are a helpful coding assistant."},
@@ -125,6 +138,7 @@ def chat_with_context(
             logging.debug(msg['content'])
             logging.debug("---")
 
+    # Standard call for non-o3-mini models
     resp = openai.ChatCompletion.create(model=chat_model, messages=messages)
     return resp["choices"][0]["message"]["content"]
 # END: cq/search.py

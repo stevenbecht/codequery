@@ -278,7 +278,8 @@ def handle_chat(args):
         chat_model=config["openai_chat_model"],
         top_k=args.num_results,
         verbose=args.verbose,
-        max_context_tokens=args.max_window
+        max_context_tokens=args.max_window,
+        reasoning_effort=args.reasoning_effort
     )
     logging.info("\n=== ChatGPT Answer ===")
     logging.info(answer)
@@ -545,6 +546,8 @@ def main():
     chat_parser.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
     chat_parser.add_argument("-w", "--max-window", type=int, default=3000,
                              help="Max tokens to use for code context in the chat prompt")
+    chat_parser.add_argument("--reasoning-effort", choices=["low", "medium", "high"], default="medium",
+                             help="Reasoning effort level for o3-mini model (default: medium)")
     chat_parser.set_defaults(func=handle_chat)
 
     # STATS

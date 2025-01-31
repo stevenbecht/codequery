@@ -243,6 +243,13 @@ def handle_chat(args):
         logging.error("You must provide --query/-q unless using --list-models.")
         sys.exit(1)
 
+    # Check if we have input from stdin (e.g., from a pipe)
+    stdin_content = ""
+    if not sys.stdin.isatty():
+        stdin_content = sys.stdin.read().strip()
+        if stdin_content:
+            logging.debug("[Chat] Received input from stdin")
+
     # If user specified a custom provider:model
     if args.model:
         if ":" not in args.model:
@@ -258,8 +265,13 @@ def handle_chat(args):
 
     client = get_qdrant_client(config["qdrant_host"], config["qdrant_port"], args.verbose)
 
+    # If we have stdin content, prepend it to the query for context
+    full_query = args.query
+    if stdin_content:
+        full_query = f"Here is the content I'm asking about:\n\n{stdin_content}\n\nMy question: {args.query}"
+
     answer = chat_with_context(
-        query=args.query,
+        query=full_query,
         collection_name=config["qdrant_collection"],
         qdrant_client=client,
         embed_model=config["openai_embed_model"],

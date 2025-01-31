@@ -265,6 +265,13 @@ def handle_chat(args):
 
     client = get_qdrant_client(config["qdrant_host"], config["qdrant_port"], args.verbose)
 
+    # Print model info and reasoning effort if o3 model
+    model_name = config["openai_chat_model"]
+    logging.info(f"\n=== Using Model: {model_name} ===")
+    if model_name.startswith('o3-'):
+        logging.info(f"Reasoning Effort: {args.reasoning_effort}")
+    logging.info("")
+
     # If we have stdin content, prepend it to the query for context
     full_query = args.query
     if stdin_content:

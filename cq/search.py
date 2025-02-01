@@ -14,7 +14,10 @@ def search_codebase_in_qdrant(
     verbose: bool = False
 ):
     """Embed `query`, search Qdrant for top_k results."""
+    # Get query embedding and count tokens
+    query_tokens = count_tokens(query, embed_model)
     query_emb = openai.Embedding.create(model=embed_model, input=query)["data"][0]["embedding"]
+    
     response = qdrant_client.query_points(
         collection_name=collection_name,
         query=query_emb,
@@ -22,7 +25,19 @@ def search_codebase_in_qdrant(
         with_payload=True,
         with_vectors=verbose
     )
-    return response.points
+    
+    # Calculate total tokens in matched snippets
+    total_snippet_tokens = sum(
+        count_tokens(point.payload['code'], embed_model) 
+        for point in response.points
+    )
+    
+    return {
+        'points': response.points,
+        'query_tokens': query_tokens,
+        'snippet_tokens': total_snippet_tokens,
+        'total_tokens': query_tokens + total_snippet_tokens
+    }
 
 def build_context_snippets(results):
     """Concatenate matched code snippets for LLM context (no token limit)."""
@@ -92,7 +107,7 @@ def chat_with_context(
 
     if verbose:
         logging.debug("=== Qdrant Search Results for Chat (Verbose) ===")
-        for i, match in enumerate(results, start=1):
+        for i, match in enumerate(results['points'], start=1):
             logging.debug(f"--- Match #{i} ---")
             logging.debug(f"ID: {match.id}")
             logging.debug(f"Score: {match.score:.3f}")
@@ -108,10 +123,10 @@ def chat_with_context(
             logging.debug("-------------------------")
 
     if max_context_tokens is None or max_context_tokens <= 0:
-        context_text = build_context_snippets(results)
+        context_text = build_context_snippets(results['points'])
     else:
         context_text = build_context_snippets_limited(
-            results,
+            results['points'],
             max_context_tokens=max_context_tokens,
             model=chat_model
         )

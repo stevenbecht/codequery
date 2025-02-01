@@ -110,7 +110,7 @@ def handle_search(args):
     else:
         num_results = args.num_results
 
-    results = search_codebase_in_qdrant(
+    search_results = search_codebase_in_qdrant(
         query=args.query,
         collection_name=config["qdrant_collection"],
         qdrant_client=client,
@@ -118,7 +118,9 @@ def handle_search(args):
         top_k=num_results,
         verbose=args.verbose
     )
-
+    
+    results = search_results['points']
+    
     # Filter results by threshold score
     filtered_results = [r for r in results if r.score >= args.threshold]
 
@@ -220,6 +222,11 @@ Now here's the raw XML of matched code snippets:
             logging.info(f"Score: {match.score:.3f}")
             logging.info(f"File: {pl['file_path']} | Function: {pl['function_name']}")
             logging.info(f"(lines {pl['start_line']}-{pl['end_line']})\n{pl['code']}\n")
+
+    logging.info("\n=== Token Usage ===")
+    logging.info(f"Query tokens: {search_results['query_tokens']:,}")
+    logging.info(f"Matched snippet tokens: {search_results['snippet_tokens']:,}")
+    logging.info(f"Total tokens: {search_results['total_tokens']:,}")
 
 def handle_chat(args):
     """Chat subcommand: list models if requested, else do a Q&A chat."""

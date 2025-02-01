@@ -101,7 +101,7 @@ def handle_search(args):
     client = get_qdrant_client(config["qdrant_host"], config["qdrant_port"], args.verbose)
 
     # Set appropriate result limits based on mode and threshold
-    if args.threshold > 0:
+    if args.threshold > 0 and not args.num_results:  # Only use threshold override if -n not specified
         num_results = 1000  # Use a high limit to get all matches above threshold
     elif args.all:
         num_results = 1000
@@ -538,7 +538,7 @@ def main():
     search_parser.add_argument("-a", "--all", action="store_true", help="Return all matches (up to 1000)")
     search_parser.add_argument("-l", "--list", action="store_true", help="List only matching file paths")
     search_parser.add_argument("-t", "--threshold", type=float, default=0.25,
-                             help="Minimum similarity score threshold (0.0 to 1.0). When set, returns all matches above threshold")
+                             help="Minimum similarity score threshold (0.0 to 1.0)...")
     search_parser.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
 
     # New: -x / --xml-output

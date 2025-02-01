@@ -96,4 +96,4 @@ poetry.lock
 .env
 
 # testing
-./gather_files.sh
+gather_files.sh

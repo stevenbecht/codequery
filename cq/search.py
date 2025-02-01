@@ -82,9 +82,11 @@ def chat_with_context(
 ):
     """Search, build context, and send to OpenAI ChatCompletion."""
     import time
+    from .embedding import count_tokens
     
     # Time the search operation
     search_start = time.time()
+    query_tokens = count_tokens(query, embed_model)
     results = search_codebase_in_qdrant(query, collection_name, qdrant_client, embed_model, top_k, verbose)
     search_time = time.time() - search_start
 
@@ -133,9 +135,19 @@ def chat_with_context(
             reasoning_effort=reasoning_effort
         )
         chat_time = time.time() - chat_start
-        logging.info("\n=== Detailed Timing ===")
+        
+        # Calculate token usage
+        prompt_tokens = sum(count_tokens(m["content"], chat_model) for m in messages)
+        completion_tokens = count_tokens(resp["choices"][0]["message"]["content"], chat_model)
+        total_tokens = prompt_tokens + completion_tokens
+        
+        logging.info("\n=== Detailed Timing & Usage ===")
         logging.info(f"Search time: {search_time:.2f} seconds")
+        logging.info(f"Search tokens: {query_tokens:,} tokens")
         logging.info(f"Chat time: {chat_time:.2f} seconds")
+        logging.info(f"Chat tokens (prompt): {prompt_tokens:,} tokens")
+        logging.info(f"Chat tokens (completion): {completion_tokens:,} tokens")
+        logging.info(f"Chat tokens (total): {total_tokens:,} tokens")
         return resp["choices"][0]["message"]["content"]
     else:
         messages = [
@@ -154,9 +166,18 @@ def chat_with_context(
     resp = openai.ChatCompletion.create(model=chat_model, messages=messages)
     chat_time = time.time() - chat_start
     
-    logging.info("\n=== Detailed Timing ===")
+    # Calculate token usage
+    prompt_tokens = sum(count_tokens(m["content"], chat_model) for m in messages)
+    completion_tokens = count_tokens(resp["choices"][0]["message"]["content"], chat_model)
+    total_tokens = prompt_tokens + completion_tokens
+    
+    logging.info("\n=== Detailed Timing & Usage ===")
     logging.info(f"Search time: {search_time:.2f} seconds")
+    logging.info(f"Search tokens: {query_tokens:,} tokens")
     logging.info(f"Chat time: {chat_time:.2f} seconds")
+    logging.info(f"Chat tokens (prompt): {prompt_tokens:,} tokens")
+    logging.info(f"Chat tokens (completion): {completion_tokens:,} tokens")
+    logging.info(f"Chat tokens (total): {total_tokens:,} tokens")
     
     return resp["choices"][0]["message"]["content"]
 # END: cq/search.py

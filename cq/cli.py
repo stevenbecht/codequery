@@ -295,8 +295,7 @@ def handle_chat(args):
     end_time = time.time()
     total_time = end_time - start_time
     
-    logging.info("\n=== Query Timing ===")
-    logging.info(f"Total time: {total_time:.2f} seconds")
+    logging.info(f"\nTotal time: {total_time:.2f} seconds")
     logging.info("\n=== ChatGPT Answer ===")
     logging.info(answer)
 

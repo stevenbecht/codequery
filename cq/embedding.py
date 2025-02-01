@@ -1,4 +1,3 @@
-# BEGIN: cq/embedding.py
 import os
 import glob
 import ast
@@ -393,4 +392,3 @@ def index_codebase_in_qdrant(
     if verbose:
         logging.debug(f"Total new chunks indexed: {len(chunks_to_embed)}")
     logging.info(f"Done embedding. Estimated total billed tokens = {total_tokens}")
-# END: cq/embedding.py

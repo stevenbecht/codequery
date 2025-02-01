@@ -1,4 +1,3 @@
-# BEGIN: cq/search.py
 import logging
 import openai
 from qdrant_client import QdrantClient
@@ -195,4 +194,3 @@ def chat_with_context(
     logging.info(f"Chat tokens (total): {total_tokens:,} tokens")
     
     return resp["choices"][0]["message"]["content"]
-# END: cq/search.py

@@ -13,12 +13,16 @@ def register_subparser(subparsers):
     stats_parser = subparsers.add_parser("stats", help="Show stats or debug info.")
 
     stats_parser.add_argument(
-        "--all-collections", action="store_true",
-        help="If set, show stats for all Qdrant collections instead of just one."
+        "-a", "--all-collections", action="store_true",
+        help="Show stats for ALL Qdrant collections instead of just one."
     )
     stats_parser.add_argument(
         "-c", "--collection", type=str, default=None,
         help="Name of the Qdrant collection to show stats for. Defaults to basename(pwd)_collection."
+    )
+    stats_parser.add_argument(
+        "-l", "--list-summary", action="store_true",
+        help="Show only a short summary of the collection(s): total chunks/tokens, avg tokens."
     )
     stats_parser.add_argument(
         "-v", "--verbose", action="store_true",
@@ -29,6 +33,7 @@ def register_subparser(subparsers):
 def handle_stats(args):
     """
     Stats subcommand: gather Qdrant stats for either one or all collections.
+    If --list-summary is set, only print the top-level metrics.
     """
     config = load_config()
 
@@ -44,19 +49,32 @@ def handle_stats(args):
         all_names = [c.name for c in collections_info.collections]
         logging.info(f"[Stats] Found {len(all_names)} collections: {all_names}")
         for coll_name in all_names:
-            _show_stats_for_collection(client, coll_name)
+            _show_stats_for_collection(
+                client=client,
+                coll_name=coll_name,
+                short_summary=args.list_summary
+            )
         return
     else:
         # Single collection
         if args.collection:
             coll_name = args.collection
         else:
+            # default to <pwd_base>_collection if user didn't specify
             pwd_base = os.path.basename(os.getcwd())
             coll_name = pwd_base + "_collection"
-        _show_stats_for_collection(client, coll_name)
 
+        _show_stats_for_collection(
+            client=client,
+            coll_name=coll_name,
+            short_summary=args.list_summary
+        )
 
-def _show_stats_for_collection(client, coll_name: str):
+def _show_stats_for_collection(client, coll_name: str, short_summary: bool = False):
+    """
+    Gather and print stats for the given Qdrant collection.
+    If short_summary=True, skip per-file details and largest chunk listing.
+    """
     if not client.collection_exists(coll_name):
         logging.info(f"[Stats] Collection '{coll_name}' does not exist.")
         return
@@ -114,6 +132,12 @@ def _show_stats_for_collection(client, coll_name: str):
     avg_tokens = total_tokens / len(all_points) if all_points else 0
     logging.info(f" - Average tokens per chunk: {avg_tokens:.1f}")
 
+    # If user wants only a short summary, stop here
+    if short_summary:
+        logging.info("\nDone.\n")
+        return
+
+    # Otherwise, print the details:
     logging.info("\nPer-file Stats:")
     for fpath, stats in file_stats.items():
         logging.info(f"  {fpath}")

@@ -2,6 +2,7 @@ import sys
 import logging
 import openai
 import time
+import os
 
 from cq.config import load_config
 from cq.search import chat_with_context
@@ -12,8 +13,10 @@ def register_subparser(subparsers):
     Register the 'chat' subcommand and its arguments.
     """
     chat_parser = subparsers.add_parser("chat", help="Search + Chat with retrieved code.")
+    
     chat_parser.add_argument(
-        "-q", "--query", help="Query text for the chat (required unless --list-models)."
+        "-q", "--query",
+        help="Query text for the chat (required unless --list-models)."
     )
     chat_parser.add_argument(
         "-n", "--num-results", type=int, default=3,
@@ -26,6 +29,10 @@ def register_subparser(subparsers):
     chat_parser.add_argument(
         "--list-models", action="store_true",
         help="List available OpenAI models and exit (no chat performed)."
+    )
+    chat_parser.add_argument(
+        "-c", "--collection", type=str, default=None,
+        help="Name of the Qdrant collection to chat over. Defaults to basename(pwd)_collection."
     )
     chat_parser.add_argument(
         "-v", "--verbose", action="store_true",
@@ -43,14 +50,21 @@ def register_subparser(subparsers):
 
 def handle_chat(args):
     """
-    Chat subcommand: list models if requested, else do a Q&A chat.
+    Chat subcommand: 
+      - If --list-models, prints available OpenAI models and exits.
+      - Otherwise, checks if the target collection exists, then calls chat_with_context().
+
+    The collection can be overridden with --collection/-c. 
+    If not specified, we default to basename(pwd) + "_collection".
     """
     config = load_config()
 
+    # Ensure we have an OpenAI key
     if not openai.api_key:
         logging.error("No valid OPENAI_API_KEY set. Please update your .env or environment.")
         sys.exit(1)
 
+    # List models if requested
     if args.list_models:
         logging.info("[Chat] Listing OpenAI models...\n")
         try:
@@ -61,16 +75,28 @@ def handle_chat(args):
             logging.error(f"Error listing models: {e}")
         sys.exit(0)
 
+    # Make sure we have a query unless we're just listing models
     if not args.query:
         logging.error("You must provide --query/-q unless using --list-models.")
         sys.exit(1)
 
-    # Check if we have input from stdin (e.g., from a pipe)
-    stdin_content = ""
-    if not sys.stdin.isatty():
-        stdin_content = sys.stdin.read().strip()
-        if stdin_content:
-            logging.debug("[Chat] Received input from stdin")
+    # Derive the target collection name
+    if args.collection:
+        collection_name = args.collection
+    else:
+        pwd_base = os.path.basename(os.getcwd())
+        collection_name = pwd_base + "_collection"
+
+    logging.debug(f"[Chat] Using collection name: {collection_name}")
+
+    # Connect to Qdrant
+    client = get_qdrant_client(config["qdrant_host"], config["qdrant_port"], args.verbose)
+
+    # Check if collection exists (avoid 404 from Qdrant)
+    if not client.collection_exists(collection_name):
+        logging.info(f"[Chat] Collection '{collection_name}' does not exist.")
+        logging.info(f"Try running: cq embed -c {collection_name} [--recreate] to create it first.")
+        return  # Gracefully exit
 
     # If user specified a custom provider:model
     if args.model:
@@ -85,8 +111,6 @@ def handle_chat(args):
             logging.warning(f"Unknown provider '{provider}'. Only 'openai' is supported right now.")
             sys.exit(1)
 
-    client = get_qdrant_client(config["qdrant_host"], config["qdrant_port"], args.verbose)
-
     # Print model info and reasoning effort if o3 model
     model_name = config["openai_chat_model"]
     logging.info(f"\n=== Using Model: {model_name} ===")
@@ -94,16 +118,24 @@ def handle_chat(args):
         logging.info(f"Reasoning Effort: {args.reasoning_effort}")
     logging.info("")
 
-    # Combine query with any stdin content
+    # If the user piped content via stdin
+    stdin_content = ""
+    if not sys.stdin.isatty():
+        stdin_content = sys.stdin.read().strip()
+        if stdin_content:
+            logging.debug("[Chat] Received input from stdin")
+
+    # Combine the stdin snippet with the user-provided query
     full_query = args.query
     if stdin_content:
         full_query = f"Here is the content I'm asking about:\n\n{stdin_content}\n\nMy question: {args.query}"
 
     start_time = time.time()
 
+    # Perform the chat with context from the specified Qdrant collection
     answer = chat_with_context(
         query=full_query,
-        collection_name=config["qdrant_collection"],
+        collection_name=collection_name,
         qdrant_client=client,
         embed_model=config["openai_embed_model"],
         chat_model=config["openai_chat_model"],

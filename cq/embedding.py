@@ -202,7 +202,6 @@ def chunk_directory(
     other supported languages use naive line-based chunking.
     """
     if not recursive:
-        # Get files in current directory
         candidates = glob.glob(os.path.join(directory, "*.*"))
         for file_path in candidates:
             ext = os.path.splitext(file_path)[1].lower()
@@ -211,7 +210,6 @@ def chunk_directory(
             elif ext in [".js", ".jsx", ".ts", ".tsx", ".php"]:
                 yield from chunk_file_generic(file_path, model=model, max_tokens=max_tokens)
             else:
-                # NEW CHANGE: Log when we skip an unrecognized file type
                 logging.info(f"[ChunkDir] Skipping unrecognized file type: {file_path}")
     else:
         for root, dirs, files in os.walk(directory):
@@ -223,13 +221,10 @@ def chunk_directory(
                 elif ext in [".js", ".jsx", ".ts", ".tsx", ".php"]:
                     yield from chunk_file_generic(full_path, model=model, max_tokens=max_tokens)
                 else:
-                    # NEW CHANGE: Log when we skip an unrecognized file type
                     logging.info(f"[ChunkDir] Skipping unrecognized file type: {full_path}")
 
 def compute_snippet_hash(text: str) -> str:
-    """
-    Compute a hash (MD5) for the snippet text to detect changes.
-    """
+    """Compute a hash (MD5) for the snippet text to detect changes."""
     return hashlib.md5(text.encode("utf-8")).hexdigest()
 
 def index_codebase_in_qdrant(
@@ -240,31 +235,31 @@ def index_codebase_in_qdrant(
     verbose: bool = False,
     recursive: bool = False,
     max_tokens: int = 1500,
-    incremental: bool = False
+    recreate: bool = False  # <-- new param
 ):
     """
-    Index code from `directory` into Qdrant, optionally in incremental mode.
-    This now supports Python, JavaScript, TypeScript, and PHP files.
+    Index code from `directory` into Qdrant.
+    By default, do incremental indexing if the collection already exists.
+    If `recreate=True`, forcibly delete and re-create the collection first.
     """
-    if not incremental:
+    # If user wants a fresh index:
+    if recreate:
         if qdrant_client.collection_exists(collection_name):
+            logging.info(f"[Index] Re-creating collection '{collection_name}'")
             qdrant_client.delete_collection(collection_name)
         qdrant_client.create_collection(
             collection_name=collection_name,
             vectors_config=VectorParams(size=1536, distance=Distance.COSINE)
         )
         known_hashes = set()
-        if verbose:
-            logging.debug("[Index] Non-incremental mode: collection recreated.")
     else:
+        # Incremental approach
         if not qdrant_client.collection_exists(collection_name):
             qdrant_client.create_collection(
                 collection_name=collection_name,
                 vectors_config=VectorParams(size=1536, distance=Distance.COSINE)
             )
             known_hashes = set()
-            if verbose:
-                logging.debug("[Index] Incremental mode: collection did not exist; created new.")
         else:
             known_hashes = set()
             limit = 100
@@ -288,20 +283,23 @@ def index_codebase_in_qdrant(
             if verbose:
                 logging.debug(f"[Index] Incremental mode: found {len(known_hashes)} existing snippet hashes.")
 
-    # Collect code chunks from recognized file types
-    all_chunks = list(chunk_directory(
-        directory=directory,
-        recursive=recursive,
-        model=embed_model,
-        max_tokens=max_tokens
-    ))
-
+    all_chunks = list(
+        chunk_directory(
+            directory=directory,
+            recursive=recursive,
+            model=embed_model,
+            max_tokens=max_tokens
+        )
+    )
     if not all_chunks:
         logging.info(f"No supported code files found in '{directory}'.")
         return
 
-    point_id = 0
-    if incremental:
+    # Find the next point_id to assign:
+    if recreate:
+        point_id = 0
+    else:
+        # get max existing ID
         max_id = 0
         offset = None
         while True:
@@ -320,7 +318,7 @@ def index_codebase_in_qdrant(
             offset = next_offset
         point_id = max_id + 1
         if verbose:
-            logging.debug(f"[Index] Highest existing point_id is {max_id}; new IDs start at {point_id}.")
+            logging.debug(f"[Index] Next point_id will start at {point_id}")
 
     chunks_to_embed = []
     for ch in all_chunks:
@@ -330,10 +328,8 @@ def index_codebase_in_qdrant(
             chunks_to_embed.append(ch)
         else:
             if verbose:
-                logging.debug(
-                    f"[Index] Skipping unchanged snippet: {ch['file_path']} lines "
-                    f"{ch['start_line']}-{ch['end_line']}"
-                )
+                logging.debug(f"[Index] Skipping unchanged snippet: {ch['file_path']} "
+                              f"({ch['start_line']}-{ch['end_line']})")
 
     if not chunks_to_embed:
         logging.info("[Index] All snippets are up-to-date. No new embeddings.")
@@ -355,6 +351,7 @@ def index_codebase_in_qdrant(
         vectors = [item["embedding"] for item in resp["data"]]
         return vectors, used_tokens
 
+    # Split into batches so we don’t exceed OpenAI’s request size limit
     for start_idx in range(0, len(chunks_to_embed), BATCH_SIZE):
         batch = chunks_to_embed[start_idx:start_idx + BATCH_SIZE]
         texts = [b["code"] for b in batch]
@@ -385,10 +382,7 @@ def index_codebase_in_qdrant(
 
         if verbose:
             logging.debug(
-                f"[Batch] Upserted {len(points_to_upsert)} points. "
-                f"Running total tokens: {total_tokens}"
+                f"[Index] Upserted {len(points_to_upsert)} points. Running total tokens: {total_tokens}"
             )
 
-    if verbose:
-        logging.debug(f"Total new chunks indexed: {len(chunks_to_embed)}")
-    logging.info(f"Done embedding. Estimated total billed tokens = {total_tokens}")
+    logging.info(f"[Index] Done embedding. Estimated total billed tokens = {total_tokens}")

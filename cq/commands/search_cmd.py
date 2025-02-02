@@ -1,6 +1,7 @@
 import sys
 import logging
 import openai
+import os
 
 from cq.config import load_config
 from cq.search import search_codebase_in_qdrant
@@ -11,6 +12,7 @@ def register_subparser(subparsers):
     Register the 'search' subcommand and its arguments.
     """
     search_parser = subparsers.add_parser("search", help="Search code from Qdrant.")
+
     search_parser.add_argument(
         "-q", "--query", required=True,
         help="Query text"
@@ -29,18 +31,26 @@ def register_subparser(subparsers):
     )
     search_parser.add_argument(
         "-t", "--threshold", type=float, default=0.25,
-        help="Minimum similarity score threshold (0.0 to 1.0)..."
+        help="Minimum similarity score threshold (0.0 to 1.0)."
+    )
+    search_parser.add_argument(
+        "--all-collections", action="store_true",
+        help="If set, search across all Qdrant collections, merging results by score."
+    )
+    search_parser.add_argument(
+        "-c", "--collection", type=str, default=None,
+        help="Name of a specific Qdrant collection to search. Defaults to basename(pwd)_collection if not set."
     )
     search_parser.add_argument(
         "-v", "--verbose", action="store_true",
         help="Verbose output"
     )
-    # New: -x / --xml-output
+    # -x / --xml-output
     search_parser.add_argument(
         "-x", "--xml-output", action="store_true",
         help="Output search results in XML (for LLM usage)."
     )
-    # New: -p / --include-prompt
+    # -p / --include-prompt
     search_parser.add_argument(
         "-p", "--include-prompt", action="store_true",
         help="Include a recommended LLM prompt template above the XML."
@@ -50,7 +60,9 @@ def register_subparser(subparsers):
 
 def handle_search(args):
     """
-    Search subcommand: just show Qdrant matches, or produce XML with optional LLM prompt.
+    Search subcommand: checks if the collection exists (or multiple),
+    then does a Qdrant query. If there's no collection, prints a friendly
+    message instead of raising a 404.
     """
     config = load_config()
 
@@ -58,42 +70,109 @@ def handle_search(args):
         logging.error("No valid OPENAI_API_KEY set. Please update your .env or environment.")
         sys.exit(1)
 
+    if args.threshold < 0 or args.threshold > 1.0:
+        logging.error("Threshold must be between 0.0 and 1.0.")
+        sys.exit(1)
+
     client = get_qdrant_client(config["qdrant_host"], config["qdrant_port"], args.verbose)
 
-    # Set appropriate result limits based on mode and threshold
+    # Figure out how many results we want
     if args.threshold > 0 and not args.num_results:
-        num_results = 1000  # Use a high limit to get all matches above threshold
+        num_results = 1000
     elif args.all:
         num_results = 1000
     elif args.list:
-        num_results = 25  # Smaller default for listing mode
+        num_results = 25
     else:
         num_results = args.num_results
 
-    search_results = search_codebase_in_qdrant(
-        query=args.query,
-        collection_name=config["qdrant_collection"],
-        qdrant_client=client,
-        embed_model=config["openai_embed_model"],
-        top_k=num_results,
-        verbose=args.verbose
-    )
+    # If user wants to search all collections
+    if args.all_collections:
+        collections_info = client.get_collections()
+        all_collections = [c.name for c in collections_info.collections]
+        if not all_collections:
+            logging.info("[Search] No collections exist in Qdrant. Try embedding first.")
+            return
+
+        logging.debug(f"[Search] Searching across collections: {all_collections}")
+
+        merged_points = []
+        total_query_tokens = 0
+        total_snippet_tokens = 0
+
+        # We'll query each collection, then merge results by score
+        for coll_name in all_collections:
+            sub_results = _safe_search(
+                client=client,
+                collection_name=coll_name,
+                query=args.query,
+                top_k=num_results,
+                embed_model=config["openai_embed_model"],
+                verbose=args.verbose
+            )
+            if not sub_results:
+                # Means that collection likely didn't exist or was empty
+                continue
+            for p in sub_results["points"]:
+                p.payload["collection_name"] = coll_name  
+            merged_points.extend(sub_results["points"])
+            total_query_tokens += sub_results["query_tokens"]
+            total_snippet_tokens += sub_results["snippet_tokens"]
+
+        # Sort merged by score desc, keep top N
+        merged_points.sort(key=lambda x: x.score, reverse=True)
+        if len(merged_points) > num_results:
+            merged_points = merged_points[:num_results]
+
+        search_results = {
+            "points": merged_points,
+            "query_tokens": total_query_tokens,
+            "snippet_tokens": total_snippet_tokens,
+            "total_tokens": total_query_tokens + total_snippet_tokens,
+        }
+
+    else:
+        # Single-collection approach
+        if args.collection:
+            collection_name = args.collection
+        else:
+            pwd_base = os.path.basename(os.getcwd())
+            collection_name = pwd_base + "_collection"
+
+        # Make sure collection exists
+        if not client.collection_exists(collection_name):
+            logging.info(f"[Search] Collection '{collection_name}' does not exist.")
+            logging.info(f"Try running: cq embed -c {collection_name} [--recreate] to create it first.")
+            return
+
+        search_results = _safe_search(
+            client=client,
+            collection_name=collection_name,
+            query=args.query,
+            top_k=num_results,
+            embed_model=config["openai_embed_model"],
+            verbose=args.verbose
+        )
+        if not search_results:
+            logging.info("[Search] No data found or collection is empty.")
+            return
+
     results = search_results['points']
 
-    # Filter results by threshold score
+    # Filter results by threshold
     filtered_results = [r for r in results if r.score >= args.threshold]
-
     if not filtered_results:
         logging.info(f"\nNo results found matching the query with threshold {args.threshold}")
         logging.info(f"Try lowering the threshold (current: {args.threshold})")
         return
 
-    # If --list is specified, show only unique file paths with best match scores
+    # If --list is specified, show only unique file paths (best match per file)
     if args.list:
         file_scores = {}
         for match in filtered_results:
-            file_path = match.payload["file_path"]
-            if file_path not in file_scores or match.score > file_scores[file_path]:
+            file_path = match.payload.get("file_path", "unknown_file")
+            best_score = file_scores.get(file_path, 0.0)
+            if match.score > best_score:
                 file_scores[file_path] = match.score
 
         sorted_files = sorted(file_scores.items(), key=lambda x: x[1], reverse=True)
@@ -102,9 +181,9 @@ def handle_search(args):
             logging.info(f"Score: {score:.3f} | File: {file_path}")
         return
 
-    # If -x / --xml-output is set, print results in XML format for LLM usage:
-    if getattr(args, "xml_output", False):
-        if getattr(args, "include_prompt", False):
+    # If -x / --xml-output is set, print results in XML
+    if args.xml_output:
+        if args.include_prompt:
             print("""\
 You are helping me update my codebase based on the following <search_results> (from our local CLI).
 
@@ -133,11 +212,11 @@ Now here's the raw XML of matched code snippets:
         for i, match in enumerate(filtered_results, start=1):
             pl = match.payload
             print(f"  <result index='{i}' score='{match.score:.3f}'>")
-            print(f"    <file_path>{pl['file_path']}</file_path>")
-            print(f"    <function_name>{pl['function_name']}</function_name>")
-            print(f"    <start_line>{pl['start_line']}</start_line>")
-            print(f"    <end_line>{pl['end_line']}</end_line>")
-            code_escaped = pl['code'].replace('<', '&lt;').replace('>', '&gt;')
+            print(f"    <file_path>{pl.get('file_path','')}</file_path>")
+            print(f"    <function_name>{pl.get('function_name','')}</function_name>")
+            print(f"    <start_line>{pl.get('start_line','')}</start_line>")
+            print(f"    <end_line>{pl.get('end_line','')}</end_line>")
+            code_escaped = pl.get('code','').replace('<', '&lt;').replace('>', '&gt;')
             print(f"    <code>{code_escaped}</code>")
             print("  </result>")
         print("</search_results>")
@@ -176,10 +255,33 @@ Now here's the raw XML of matched code snippets:
             pl = match.payload
             logging.info(f"\n--- Result #{i+1} ---")
             logging.info(f"Score: {match.score:.3f}")
-            logging.info(f"File: {pl['file_path']} | Function: {pl['function_name']}")
-            logging.info(f"(lines {pl['start_line']}-{pl['end_line']})\n{pl['code']}\n")
+            logging.info(f"File: {pl.get('file_path','')} | Function: {pl.get('function_name','')}")
+            logging.info(f"(lines {pl.get('start_line',0)}-{pl.get('end_line',0)})\n{pl.get('code','')}\n")
 
     logging.info("\n=== Token Usage ===")
     logging.info(f"Query tokens: {search_results['query_tokens']:,}")
     logging.info(f"Matched snippet tokens: {search_results['snippet_tokens']:,}")
     logging.info(f"Total tokens: {search_results['total_tokens']:,}")
+
+def _safe_search(client, collection_name, query, top_k, embed_model, verbose=False):
+    """
+    Helper function to do the actual Qdrant query,
+    returning None if the collection is empty or doesn't exist.
+    """
+    # If the collection doesn't exist, short-circuit:
+    if not client.collection_exists(collection_name):
+        logging.info(f"[Search] Collection '{collection_name}' does not exist. Skipping.")
+        return None
+
+    try:
+        return search_codebase_in_qdrant(
+            query=query,
+            collection_name=collection_name,
+            qdrant_client=client,
+            embed_model=embed_model,
+            top_k=top_k,
+            verbose=verbose
+        )
+    except Exception as e:
+        logging.warning(f"[Search] Error searching collection '{collection_name}': {e}")
+        return None

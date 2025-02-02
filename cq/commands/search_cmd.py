@@ -62,7 +62,8 @@ def handle_search(args):
     """
     Search subcommand: checks if the collection exists (or multiple),
     then does a Qdrant query. If there's no collection, prints a friendly
-    message instead of raising a 404.
+    message instead of raising a 404. Also includes the collection name
+    above the 'Score:' line in each result.
     """
     config = load_config()
 
@@ -111,8 +112,8 @@ def handle_search(args):
                 verbose=args.verbose
             )
             if not sub_results:
-                # Means that collection likely didn't exist or was empty
-                continue
+                continue  # skip if empty or nonexistent
+            # Label each result with the coll_name
             for p in sub_results["points"]:
                 p.payload["collection_name"] = coll_name  
             merged_points.extend(sub_results["points"])
@@ -157,6 +158,13 @@ def handle_search(args):
             logging.info("[Search] No data found or collection is empty.")
             return
 
+        # We only have one collection, but for consistency, let’s label points
+        # with that name so we can print it in the results
+        for p in search_results["points"]:
+            # Only assign if 'collection_name' not already set
+            if "collection_name" not in p.payload:
+                p.payload["collection_name"] = collection_name
+
     results = search_results['points']
 
     # Filter results by threshold
@@ -166,7 +174,7 @@ def handle_search(args):
         logging.info(f"Try lowering the threshold (current: {args.threshold})")
         return
 
-    # If --list is specified, show only unique file paths (best match per file)
+    # If --list is specified, show only unique file paths
     if args.list:
         file_scores = {}
         for match in filtered_results:
@@ -212,6 +220,7 @@ Now here's the raw XML of matched code snippets:
         for i, match in enumerate(filtered_results, start=1):
             pl = match.payload
             print(f"  <result index='{i}' score='{match.score:.3f}'>")
+            print(f"    <collection_name>{pl.get('collection_name','')}</collection_name>")
             print(f"    <file_path>{pl.get('file_path','')}</file_path>")
             print(f"    <function_name>{pl.get('function_name','')}</function_name>")
             print(f"    <start_line>{pl.get('start_line','')}</start_line>")
@@ -228,19 +237,22 @@ Now here's the raw XML of matched code snippets:
         total_matched_tokens = 0
         for i, match in enumerate(filtered_results, start=1):
             logging.info(f"\n--- Result #{i} ---")
-            logging.info(f"ID: {match.id}")
+
+            pl = match.payload
+            coll_label = pl.get("collection_name", "unknown_collection")
+            logging.info(f"Collection: {coll_label}")
             logging.info(f"Score: {match.score:.3f}")
+
             if match.vector is not None:
                 logging.debug(f"Vector (first 8 dims): {match.vector[:8]} ...")
 
-            payload = match.payload
-            if payload:
-                file_path = payload.get("file_path", "unknown_file")
-                func_name = payload.get("function_name", "unknown_func")
-                start_line = payload.get("start_line", 0)
-                end_line = payload.get("end_line", 0)
-                code_snippet = payload.get("code", "")
-                chunk_tokens = payload.get("chunk_tokens", 0)
+            if pl:
+                file_path = pl.get("file_path", "unknown_file")
+                func_name = pl.get("function_name", "unknown_func")
+                start_line = pl.get("start_line", 0)
+                end_line = pl.get("end_line", 0)
+                code_snippet = pl.get("code", "")
+                chunk_tokens = pl.get("chunk_tokens", 0)
 
                 total_matched_tokens += chunk_tokens
                 logging.info(f"File: {file_path} | Function: {func_name} (lines {start_line}-{end_line})")
@@ -251,12 +263,22 @@ Now here's the raw XML of matched code snippets:
         logging.info(f"\nTotal matched tokens (sum of 'chunk_tokens'): {total_matched_tokens}")
     else:
         logging.info(f"=== Matched Snippets (threshold: {args.threshold:.2f}) ===")
-        for i, match in enumerate(filtered_results):
+        for i, match in enumerate(filtered_results, start=1):
             pl = match.payload
-            logging.info(f"\n--- Result #{i+1} ---")
+            logging.info(f"\n--- Result #{i} ---")
+
+            coll_label = pl.get("collection_name", "unknown_collection")
+            logging.info(f"Collection: {coll_label}")
             logging.info(f"Score: {match.score:.3f}")
-            logging.info(f"File: {pl.get('file_path','')} | Function: {pl.get('function_name','')}")
-            logging.info(f"(lines {pl.get('start_line',0)}-{pl.get('end_line',0)})\n{pl.get('code','')}\n")
+
+            file_path = pl.get("file_path", "unknown_file")
+            func_name = pl.get("function_name", "unknown_func")
+            start_line = pl.get("start_line", 0)
+            end_line = pl.get("end_line", 0)
+            code_snippet = pl.get("code", "")
+
+            logging.info(f"File: {file_path} | Function: {func_name}")
+            logging.info(f"(lines {start_line}-{end_line})\n{code_snippet}\n")
 
     logging.info("\n=== Token Usage ===")
     logging.info(f"Query tokens: {search_results['query_tokens']:,}")
@@ -268,7 +290,6 @@ def _safe_search(client, collection_name, query, top_k, embed_model, verbose=Fal
     Helper function to do the actual Qdrant query,
     returning None if the collection is empty or doesn't exist.
     """
-    # If the collection doesn't exist, short-circuit:
     if not client.collection_exists(collection_name):
         logging.info(f"[Search] Collection '{collection_name}' does not exist. Skipping.")
         return None

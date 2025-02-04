@@ -9,7 +9,7 @@ OVERVIEW
 "cq" helps you:
 1) Embed your local codebase into Qdrant
 2) Search for relevant code snippets by natural language query
-3) Chat with context (pull relevant code snippets and pass them to OpenAI ChatCompletion)
+3) Chat with (or without) context (pull relevant code snippets and pass them to OpenAI ChatCompletion)
 4) Inspect stats from Qdrant
 5) Check or apply code diffs (in XML) to your local codebase
 
@@ -27,7 +27,7 @@ INSTALLATION
 ============
 1) Clone the repository:
    git clone https://github.com/stevenbecht/codequery
-   cd yourrepo
+   cd codequery
 
 2) Install dependencies:
    - Needs Python 3.7+ (the code references Python 3.11, but 3.7+ should generally work).

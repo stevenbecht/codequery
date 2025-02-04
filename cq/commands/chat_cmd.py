@@ -1,3 +1,5 @@
+# ./cq/commands/chat_cmd.py
+
 import sys
 import logging
 import openai
@@ -14,13 +16,22 @@ def register_subparser(subparsers):
     """
     chat_parser = subparsers.add_parser("chat", help="Search + Chat with retrieved code.")
     
+    # Renamed from -n/--num-results to -k/--num-results:
+    chat_parser.add_argument(
+        "-k", "--num-results", type=int, default=3,
+        help="Number of matches to return"
+    )
+
+    # Add new -n/--no-context:
+    chat_parser.add_argument(
+        "-n", "--no-context",
+        action="store_true",
+        help="Ignore any Qdrant collection code context; just do a direct chat with your query."
+    )
+
     chat_parser.add_argument(
         "-q", "--query",
         help="Query text for the chat (required unless --list-models)."
-    )
-    chat_parser.add_argument(
-        "-n", "--num-results", type=int, default=3,
-        help="Number of matches to return"
     )
     chat_parser.add_argument(
         "-m", "--model",
@@ -50,12 +61,11 @@ def register_subparser(subparsers):
 
 def handle_chat(args):
     """
-    Chat subcommand: 
+    Chat subcommand:
       - If --list-models, prints available OpenAI models and exits.
-      - Otherwise, checks if the target collection exists, then calls chat_with_context().
-
-    The collection can be overridden with --collection/-c. 
-    If not specified, we default to basename(pwd) + "_collection".
+      - Otherwise, either:
+        * If --no-context, skip code context from Qdrant and just do a direct chat.
+        * Else, check if the target collection exists, then calls chat_with_context().
     """
     config = load_config()
 
@@ -76,9 +86,77 @@ def handle_chat(args):
         sys.exit(0)
 
     # Make sure we have a query unless we're just listing models
-    if not args.query:
-        logging.error("You must provide --query/-q unless using --list-models.")
+    if not args.query and not args.no_context:
+        logging.error("You must provide --query/-q unless using --list-models or --no-context.")
         sys.exit(1)
+
+    # If user specified a custom provider:model
+    if args.model:
+        if ":" not in args.model:
+            logging.error("Model must be in 'provider:model' format, e.g. openai:gpt-3.5-turbo.")
+            sys.exit(1)
+        provider, model_name = args.model.split(":", 1)
+        if provider.lower() == "openai":
+            logging.debug(f"[Chat] Using custom OpenAI model: {model_name}")
+            config["openai_chat_model"] = model_name
+        else:
+            logging.warning(f"Unknown provider '{provider}'. Only 'openai' is supported right now.")
+            sys.exit(1)
+
+    model_name = config["openai_chat_model"]
+
+    ################################################################
+    # If --no-context, do a direct chat with OpenAI, skipping Qdrant
+    ################################################################
+    if args.no_context:
+        logging.info(f"\n=== Using Model: {model_name} === (no context mode)\n")
+        
+        # If the user piped content via stdin
+        stdin_content = ""
+        if not sys.stdin.isatty():
+            stdin_content = sys.stdin.read().strip()
+            if stdin_content:
+                logging.debug("[Chat] Received input from stdin (no context mode)")
+
+        # Combine the stdin snippet with the user-provided query
+        # If user didn't provide --query, rely only on stdin content
+        full_query = args.query or ""
+        if stdin_content:
+            if full_query:
+                full_query = f"{full_query}\n\nAdditionally, this content:\n\n{stdin_content}"
+            else:
+                full_query = stdin_content
+
+        # If there's still no content at all, nothing to do
+        if not full_query.strip():
+            logging.error("No query text provided via --query or stdin in no-context mode.")
+            sys.exit(1)
+
+        start_time = time.time()
+
+        # Basic ChatCompletion with user-provided text only
+        messages = [
+            {"role": "system", "content": "You are a helpful coding assistant."},
+            {"role": "user", "content": full_query}
+        ]
+        
+        # Make the chat request
+        resp = openai.ChatCompletion.create(
+            model=model_name,
+            messages=messages
+        )
+        end_time = time.time()
+
+        # Log timing / usage
+        total_time = end_time - start_time
+        logging.info(f"\nTotal time: {total_time:.2f} seconds")
+        logging.info("\n=== ChatGPT Answer ===")
+        logging.info(resp["choices"][0]["message"]["content"])
+        return
+
+    ################################################################
+    # Otherwise, proceed with normal context-based Qdrant logic
+    ################################################################
 
     # Derive the target collection name
     if args.collection:
@@ -98,21 +176,6 @@ def handle_chat(args):
         logging.info(f"Try running: cq embed -c {collection_name} [--recreate] to create it first.")
         return  # Gracefully exit
 
-    # If user specified a custom provider:model
-    if args.model:
-        if ":" not in args.model:
-            logging.error("Model must be in 'provider:model' format, e.g. openai:gpt-3.5-turbo.")
-            sys.exit(1)
-        provider, model_name = args.model.split(":", 1)
-        if provider.lower() == "openai":
-            logging.debug(f"[Chat] Using custom OpenAI model: {model_name}")
-            config["openai_chat_model"] = model_name
-        else:
-            logging.warning(f"Unknown provider '{provider}'. Only 'openai' is supported right now.")
-            sys.exit(1)
-
-    # Print model info and reasoning effort if o3 model
-    model_name = config["openai_chat_model"]
     logging.info(f"\n=== Using Model: {model_name} ===")
     if model_name.startswith('o3-'):
         logging.info(f"Reasoning Effort: {args.reasoning_effort}")

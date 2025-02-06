@@ -166,3 +166,23 @@ TROUBLESHOOTING & TIPS
 2) OpenAI Key: you must set OPENAI_API_KEY
 3) Large Files: code automatically splits them into multiple chunks
 4) Incremental Embedding: use --incremental to skip re-embedding unchanged code
+
+EXAMPLES
+======================
+# get git commit message - here we use -n (no context) because we're just providing the diff
+$ git diff|cq chat -n -m openai:o3-mini -q "what should i name this commit message"
+INFO: 
+=== Using Model: o3-mini === (no context mode)
+
+INFO: 
+Total time: 4.19 seconds
+INFO: 
+=== ChatGPT Answer ===
+INFO: How about a commit message like this?
+
+refactor(chat): rename num-results flag and add --no-context mode
+
+This summarizes that you've renamed the flag for specifying the number of results (swapping from -n to -k) and introduced a new --no-context flag for direct chat mode without Qdrant context. You can expand the body if needed with more details.
+
+# ask for clarity on changes
+$ git diff|cq chat -m openai:o1 -q "did i leave anything out of this refactor?"

@@ -10,7 +10,8 @@ dependencies = [
     "qdrant-client",
     "openai",
     "tiktoken",
-    "python-dotenv"
+    "python-dotenv",
+    "pathspec"
 ]
 
 [project.scripts]

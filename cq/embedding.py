@@ -10,6 +10,13 @@ import tiktoken
 from qdrant_client import QdrantClient
 from qdrant_client.models import VectorParams, Distance
 
+# NEW: import pathspec for .gitignore handling
+try:
+    import pathspec
+except ImportError:
+    logging.warning("[GitIgnore] `pathspec` not installed. `.gitignore` patterns won't be applied.")
+    pathspec = None
+
 def count_tokens(text: str, model: str = "gpt-3.5-turbo") -> int:
     """Return the token count of `text` using tiktoken."""
     try:
@@ -190,6 +197,27 @@ def chunk_file_generic(file_path: str, model: str = "gpt-3.5-turbo", max_tokens:
             max_tokens=max_tokens
         )
 
+def _load_gitignore_patterns(base_dir: str):
+    """
+    If pathspec is installed, parse the .gitignore in `base_dir`.
+    Returns a compiled PathSpec, or None if no .gitignore found or pathspec missing.
+    """
+    if pathspec is None:
+        return None  # pathspec not installed
+
+    gitignore_path = os.path.join(base_dir, ".gitignore")
+    if not os.path.isfile(gitignore_path):
+        return None
+
+    try:
+        with open(gitignore_path, "r", encoding="utf-8") as f:
+            lines = f.read().splitlines()
+        spec = pathspec.PathSpec.from_lines(pathspec.patterns.GitWildMatchPattern, lines)
+        return spec
+    except Exception as e:
+        logging.warning(f"[GitIgnore] Could not parse .gitignore: {e}")
+        return None
+
 def chunk_directory(
     directory: str,
     recursive: bool = False,
@@ -200,10 +228,22 @@ def chunk_directory(
     Traverse the directory (optionally recursive) and yield code chunks
     from .py, .js, .ts, .php files. Python uses AST-based chunking;
     other supported languages use naive line-based chunking.
+
+    Now also honors `.gitignore` if present in `directory`.
     """
+    gitignore_spec = _load_gitignore_patterns(directory)
+
     if not recursive:
+        # Non-recursive
         candidates = glob.glob(os.path.join(directory, "*.*"))
         for file_path in candidates:
+            # If .gitignore pattern matches, skip
+            if gitignore_spec:
+                rel_path = os.path.relpath(file_path, directory)
+                if gitignore_spec.match_file(rel_path):
+                    logging.info(f"[ChunkDir] Skipping ignored file: {rel_path}")
+                    continue
+
             ext = os.path.splitext(file_path)[1].lower()
             if ext == ".py":
                 yield from chunk_file_python(file_path, model=model, max_tokens=max_tokens)
@@ -212,10 +252,25 @@ def chunk_directory(
             else:
                 logging.info(f"[ChunkDir] Skipping unrecognized file type: {file_path}")
     else:
+        # Recursive walk
         for root, dirs, files in os.walk(directory):
+            # If .gitignore pattern matches the *directory*, remove it from `dirs` so we skip it entirely
+            if gitignore_spec:
+                # We need to modify dirs in-place so os.walk won't descend into them
+                dirs[:] = [
+                    d for d in dirs
+                    if not gitignore_spec.match_file(os.path.relpath(os.path.join(root, d), directory))
+                ]
+
             for file_name in files:
-                ext = os.path.splitext(file_name)[1].lower()
                 full_path = os.path.join(root, file_name)
+                rel_path = os.path.relpath(full_path, directory)
+
+                if gitignore_spec and gitignore_spec.match_file(rel_path):
+                    logging.info(f"[ChunkDir] Skipping ignored file: {rel_path}")
+                    continue
+
+                ext = os.path.splitext(file_name)[1].lower()
                 if ext == ".py":
                     yield from chunk_file_python(full_path, model=model, max_tokens=max_tokens)
                 elif ext in [".js", ".jsx", ".ts", ".tsx", ".php"]:
@@ -235,12 +290,14 @@ def index_codebase_in_qdrant(
     verbose: bool = False,
     recursive: bool = False,
     max_tokens: int = 1500,
-    recreate: bool = False  # <-- new param
+    recreate: bool = False
 ):
     """
     Index code from `directory` into Qdrant.
     By default, do incremental indexing if the collection already exists.
     If `recreate=True`, forcibly delete and re-create the collection first.
+
+    Now also skips any files that match .gitignore in `directory`.
     """
     # If user wants a fresh index:
     if recreate:
@@ -292,7 +349,7 @@ def index_codebase_in_qdrant(
         )
     )
     if not all_chunks:
-        logging.info(f"No supported code files found in '{directory}'.")
+        logging.info(f"No supported code files found in '{directory}' (or all ignored).")
         return
 
     # Find the next point_id to assign:

@@ -1,3 +1,5 @@
+# ./cq/cli.py
+
 import argparse
 import sys
 import logging
@@ -11,15 +13,36 @@ from cq.commands import diff_cmd
 
 def setup_logging(verbose: bool):
     """
-    Sets up the root logger level to DEBUG if verbose is True,
-    otherwise INFO. Outputs to stdout instead of stderr.
+    Removes all existing handlers, then attaches exactly one handler
+    so we fully control which logs appear. Blocks "HTTP Request:" lines
+    if not verbose. 
     """
+    root_logger = logging.getLogger()
+    # 1) Remove any existing handlers
+    for h in list(root_logger.handlers):
+        root_logger.removeHandler(h)
+
+    # 2) Decide overall log level
     level = logging.DEBUG if verbose else logging.INFO
-    logging.basicConfig(
-        level=level,
-        format="%(levelname)s: %(message)s",
-        stream=sys.stdout,  # Use stdout explicitly
-    )
+    root_logger.setLevel(level)
+
+    # 3) Create a single stream handler with your desired format
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
+    handler.setLevel(level)
+
+    # 4) If not verbose, attach a filter that hides lines containing "HTTP Request:"
+    if not verbose:
+        class HideHttpRequestsFilter(logging.Filter):
+            def filter(self, record: logging.LogRecord) -> bool:
+                if "HTTP Request:" in record.getMessage():
+                    return False
+                return True
+
+        handler.addFilter(HideHttpRequestsFilter())
+
+    # 5) Attach your single handler
+    root_logger.addHandler(handler)
 
 def main():
     parser = argparse.ArgumentParser(

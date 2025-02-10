@@ -28,7 +28,11 @@ def register_subparser(subparsers):
     )
     search_parser.add_argument(
         "-l", "--list", action="store_true",
-        help="List only matching file paths (plus token counts)"
+        help="List only matching file paths (plus token counts)."
+    )
+    search_parser.add_argument(
+        "-d", "--dump", action="store_true",
+        help="When used with -l, also print the entire contents of each matching file."
     )
     search_parser.add_argument(
         "-t", "--threshold", type=float, default=0.25,
@@ -178,6 +182,7 @@ def handle_search(args):
 
     ################################################################
     # --list mode: Show unique file paths, plus total tokens
+    # If --dump is also set, print the entire file contents for each.
     ################################################################
     if args.list:
         file_data = {}
@@ -220,6 +225,26 @@ def handle_search(args):
             )
 
         logging.info(f"\n=== Total tokens (across all matched files): {total_tokens_across_files} ===")
+
+        # If user wants full dump of each matched file:
+        if args.dump:
+            for file_path, info in sorted_files:
+                # Attempt to read entire file
+                full_path = os.path.join(os.getcwd(), file_path)
+                try:
+                    with open(full_path, "r", encoding="utf-8") as f:
+                        file_content = f.read()
+                except Exception as e:
+                    file_content = f"[ERROR: could not read file: {str(e)}]"
+
+                # Print exactly as requested: 
+                #   BEGIN: filename
+                #   <contents>
+                #   END: filename
+                print(f"\nBEGIN: {file_path}")
+                print(file_content, end="" if file_content.endswith("\n") else "\n")
+                print(f"END: {file_path}")
+
         return
 
     ################################################################

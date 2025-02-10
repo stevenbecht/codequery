@@ -1,3 +1,4 @@
+# BEGIN: ./cq/commands/search_cmd.py
 import sys
 import logging
 import openai
@@ -27,7 +28,7 @@ def register_subparser(subparsers):
     )
     search_parser.add_argument(
         "-l", "--list", action="store_true",
-        help="List only matching file paths"
+        help="List only matching file paths (plus token counts)"
     )
     search_parser.add_argument(
         "-t", "--threshold", type=float, default=0.25,
@@ -161,7 +162,6 @@ def handle_search(args):
         # We only have one collection, but for consistency, let’s label points
         # with that name so we can print it in the results
         for p in search_results["points"]:
-            # Only assign if 'collection_name' not already set
             if "collection_name" not in p.payload:
                 p.payload["collection_name"] = collection_name
 
@@ -174,19 +174,38 @@ def handle_search(args):
         logging.info(f"Try lowering the threshold (current: {args.threshold})")
         return
 
-    # If --list is specified, show only unique file paths
+    # If --list is specified, show only unique file paths + token totals
     if args.list:
-        file_scores = {}
+        file_data = {}
         for match in filtered_results:
             file_path = match.payload.get("file_path", "unknown_file")
-            best_score = file_scores.get(file_path, 0.0)
-            if match.score > best_score:
-                file_scores[file_path] = match.score
+            chunk_tokens = match.payload.get("chunk_tokens", 0)
+            score = match.score
 
-        sorted_files = sorted(file_scores.items(), key=lambda x: x[1], reverse=True)
+            if file_path not in file_data:
+                file_data[file_path] = {
+                    "score": score,
+                    "tokens": chunk_tokens
+                }
+            else:
+                # Update best score if this snippet's is higher
+                if score > file_data[file_path]["score"]:
+                    file_data[file_path]["score"] = score
+                # Add snippet tokens to the total tokens for that file
+                file_data[file_path]["tokens"] += chunk_tokens
+
+        # Sort by best score descending
+        sorted_files = sorted(file_data.items(), key=lambda x: x[1]["score"], reverse=True)
+
         logging.info(f"\n=== Matching Files (threshold: {args.threshold:.2f}) ===")
-        for file_path, score in sorted_files:
-            logging.info(f"Score: {score:.3f} | File: {file_path}")
+        total_tokens_across_files = 0
+        for file_path, info in sorted_files:
+            logging.info(
+                f"Score: {info['score']:.3f} | Tokens: {info['tokens']} | File: {file_path}"
+            )
+            total_tokens_across_files += info["tokens"]
+
+        logging.info(f"\n=== Total tokens (across all matched files): {total_tokens_across_files} ===")
         return
 
     # If -x / --xml-output is set, print results in XML
@@ -306,3 +325,4 @@ def _safe_search(client, collection_name, query, top_k, embed_model, verbose=Fal
     except Exception as e:
         logging.warning(f"[Search] Error searching collection '{collection_name}': {e}")
         return None
+# END: ./cq/commands/search_cmd.py

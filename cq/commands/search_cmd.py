@@ -114,9 +114,11 @@ def handle_search(args):
             )
             if not sub_results:
                 continue  # skip if empty or nonexistent
+
             # Label each result with the coll_name
             for p in sub_results["points"]:
-                p.payload["collection_name"] = coll_name  
+                p.payload["collection_name"] = coll_name
+
             merged_points.extend(sub_results["points"])
             total_query_tokens += sub_results["query_tokens"]
             total_snippet_tokens += sub_results["snippet_tokens"]
@@ -174,7 +176,9 @@ def handle_search(args):
         logging.info(f"Try lowering the threshold (current: {args.threshold})")
         return
 
-    # If --list is specified, show only unique file paths + token totals
+    ################################################################
+    # --list mode: Show unique file paths, plus total tokens
+    ################################################################
     if args.list:
         file_data = {}
         for match in filtered_results:
@@ -198,17 +202,29 @@ def handle_search(args):
         sorted_files = sorted(file_data.items(), key=lambda x: x[1]["score"], reverse=True)
 
         logging.info(f"\n=== Matching Files (threshold: {args.threshold:.2f}) ===")
+
+        # Determine max width of the 'tokens' column for alignment
+        max_token_digits = 0
+        for _, info in sorted_files:
+            token_str = str(info['tokens'])
+            if len(token_str) > max_token_digits:
+                max_token_digits = len(token_str)
+
         total_tokens_across_files = 0
         for file_path, info in sorted_files:
-            logging.info(
-                f"Score: {info['score']:.3f} | Tokens: {info['tokens']} | File: {file_path}"
-            )
             total_tokens_across_files += info["tokens"]
+            # Format tokens with right alignment, e.g. 5-digit width
+            tokens_formatted = f"{info['tokens']:>{max_token_digits}}"
+            logging.info(
+                f"Score: {info['score']:.3f} | Tokens: {tokens_formatted} | File: {file_path}"
+            )
 
         logging.info(f"\n=== Total tokens (across all matched files): {total_tokens_across_files} ===")
         return
 
-    # If -x / --xml-output is set, print results in XML
+    ################################################################
+    # XML output mode
+    ################################################################
     if args.xml_output:
         if args.include_prompt:
             print("""\
@@ -250,7 +266,9 @@ Now here's the raw XML of matched code snippets:
         print("</search_results>")
         return
 
-    # Otherwise, normal text-based output
+    ################################################################
+    # Normal text-based output for snippet details
+    ################################################################
     logging.debug("=== Qdrant Search Results (Verbose) ===")
     if args.verbose:
         total_matched_tokens = 0

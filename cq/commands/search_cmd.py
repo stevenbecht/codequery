@@ -32,7 +32,7 @@ def register_subparser(subparsers):
     )
     search_parser.add_argument(
         "-d", "--dump", action="store_true",
-        help="When used with -l, also print the entire contents of each matching file."
+        help="When used with -l, also print/dump the entire contents of each matching file."
     )
     search_parser.add_argument(
         "-t", "--threshold", type=float, default=0.25,
@@ -63,6 +63,39 @@ def register_subparser(subparsers):
 
     search_parser.set_defaults(func=handle_search)
 
+def guess_language_from_extension(file_path: str) -> str:
+    """
+    Very simple mapping from extension => "language" label.
+    Fallback to "plaintext" if unknown.
+    """
+    _, ext = os.path.splitext(file_path.lower())
+    ext_map = {
+        ".py": "python",
+        ".js": "javascript",
+        ".jsx": "javascript",
+        ".ts": "typescript",
+        ".tsx": "typescript",
+        ".java": "java",
+        ".cs": "csharp",
+        ".sh": "shell",
+        ".bash": "shell",
+        ".zsh": "shell",
+        ".pl": "perl",
+        ".rb": "ruby",
+        ".php": "php",
+        ".html": "html",
+        ".htm": "html",
+        ".css": "css",
+        ".scss": "scss",
+        ".md": "markdown",
+        ".json": "json",
+        ".toml": "toml",
+        ".ini": "ini",
+        ".yaml": "yaml",
+        ".yml": "yaml",
+    }
+    return ext_map.get(ext, "plaintext")
+
 def handle_search(args):
     """
     Search subcommand: checks if the collection exists (or multiple),
@@ -92,7 +125,9 @@ def handle_search(args):
     else:
         num_results = args.num_results
 
-    # If user wants to search all collections
+    ################################################################
+    # Collect results from single or multiple collections
+    ################################################################
     if args.all_collections:
         collections_info = client.get_collections()
         all_collections = [c.name for c in collections_info.collections]
@@ -165,24 +200,26 @@ def handle_search(args):
             logging.info("[Search] No data found or collection is empty.")
             return
 
-        # We only have one collection, but for consistency, let’s label points
-        # with that name so we can print it in the results
+        # Label the collection if missing
         for p in search_results["points"]:
             if "collection_name" not in p.payload:
                 p.payload["collection_name"] = collection_name
 
-    results = search_results['points']
+    points = search_results['points']
 
+    ################################################################
     # Filter results by threshold
-    filtered_results = [r for r in results if r.score >= args.threshold]
+    ################################################################
+    filtered_results = [r for r in points if r.score >= args.threshold]
     if not filtered_results:
         logging.info(f"\nNo results found matching the query with threshold {args.threshold}")
         logging.info(f"Try lowering the threshold (current: {args.threshold})")
         return
 
     ################################################################
-    # --list mode: Show unique file paths, plus total tokens
-    # If --dump is also set, print the entire file contents for each.
+    # 1) --list mode
+    #    a) if --xml-output and --dump => produce <search_results><codefile>...</codefile></search_results>
+    #    b) else normal text listing
     ################################################################
     if args.list:
         file_data = {}
@@ -206,6 +243,71 @@ def handle_search(args):
         # Sort by best score descending
         sorted_files = sorted(file_data.items(), key=lambda x: x[1]["score"], reverse=True)
 
+        # If user wants XML output for file dump
+        if args.xml_output and args.dump:
+            # Possibly include a prompt if requested
+            if args.include_prompt:
+                print("""\
+You are helping me by providing an XML dump of the matched files from our local CLI search.
+
+The structure is:
+
+<search_results>
+  <codefile>
+    <metadata>
+      <filename>...</filename>
+      <language>...</language>
+      <tokens>123</tokens>
+      <score>0.450</score>
+    </metadata>
+    <content>
+      <![CDATA[
+      ...entire file contents...
+      ]]>
+    </content>
+  </codefile>
+  ...
+</search_results>
+""")
+
+            print("<search_results>")
+            for file_path, info in sorted_files:
+                full_path = os.path.join(os.getcwd(), file_path)
+                language = guess_language_from_extension(file_path)
+                # Attempt to read entire file
+                try:
+                    with open(full_path, "r", encoding="utf-8") as f:
+                        file_content = f.read()
+                except Exception as e:
+                    file_content = f"[ERROR: could not read file: {str(e)}]"
+
+                # Escape any ']]>' inside the content to avoid breaking the CDATA
+                # (In practice, you rarely see ']]>' in code, but let's be safe.)
+                safe_content = file_content.replace("]]>", "]]]]><![CDATA[>")
+
+                # Build <codefile> element
+                print("  <codefile>")
+                print("    <metadata>")
+                print(f"      <filename>{file_path}</filename>")
+                print(f"      <language>{language}</language>")
+                print(f"      <tokens>{info['tokens']}</tokens>")
+                print(f"      <score>{info['score']:.3f}</score>")
+                print("    </metadata>")
+                print("    <content><![CDATA[")
+                print(safe_content, end="" if safe_content.endswith("\n") else "\n")
+                print("]]></content>")
+                print("  </codefile>")
+
+            print("</search_results>")
+
+            # That’s all – we skip normal listing
+            return
+
+        ################################################################
+        # Otherwise, if user wants plain text listing or partial dump
+        ################################################################
+
+        # Print text-based summary
         logging.info(f"\n=== Matching Files (threshold: {args.threshold:.2f}) ===")
 
         # Determine max width of the 'tokens' column for alignment
@@ -218,7 +320,7 @@ def handle_search(args):
         total_tokens_across_files = 0
         for file_path, info in sorted_files:
             total_tokens_across_files += info["tokens"]
-            # Format tokens with right alignment, e.g. 5-digit width
+            # Format tokens with right alignment
             tokens_formatted = f"{info['tokens']:>{max_token_digits}}"
             logging.info(
                 f"Score: {info['score']:.3f} | Tokens: {tokens_formatted} | File: {file_path}"
@@ -226,10 +328,9 @@ def handle_search(args):
 
         logging.info(f"\n=== Total tokens (across all matched files): {total_tokens_across_files} ===")
 
-        # If user wants full dump of each matched file:
-        if args.dump:
+        # If user also specified --dump but not --xml-output, do the "BEGIN/END" style:
+        if args.dump and not args.xml_output:
             for file_path, info in sorted_files:
-                # Attempt to read entire file
                 full_path = os.path.join(os.getcwd(), file_path)
                 try:
                     with open(full_path, "r", encoding="utf-8") as f:
@@ -237,10 +338,6 @@ def handle_search(args):
                 except Exception as e:
                     file_content = f"[ERROR: could not read file: {str(e)}]"
 
-                # Print exactly as requested: 
-                #   BEGIN: filename
-                #   <contents>
-                #   END: filename
                 print(f"\nBEGIN: {file_path}")
                 print(file_content, end="" if file_content.endswith("\n") else "\n")
                 print(f"END: {file_path}")
@@ -248,7 +345,7 @@ def handle_search(args):
         return
 
     ################################################################
-    # XML output mode
+    # 2) If -x / --xml-output but not in -l mode => standard snippet-based XML
     ################################################################
     if args.xml_output:
         if args.include_prompt:
@@ -292,7 +389,7 @@ Now here's the raw XML of matched code snippets:
         return
 
     ################################################################
-    # Normal text-based output for snippet details
+    # 3) Normal text-based snippet details
     ################################################################
     logging.debug("=== Qdrant Search Results (Verbose) ===")
     if args.verbose:

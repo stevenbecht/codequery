@@ -186,3 +186,6 @@ This summarizes that you've renamed the flag for specifying the number of result
 
 # ask for clarity on changes
 $ git diff|cq chat -m openai:o1 -q "did i leave anything out of this refactor?"
+
+# ask for clarity on changes (dont include context from search)
+$ git diff|cq chat -n -m openai:o1 -q "did i leave anything out of this refactor?"

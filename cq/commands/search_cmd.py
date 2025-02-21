@@ -3,6 +3,7 @@ import sys
 import logging
 import openai
 import os
+from requests.exceptions import ConnectionError as RequestsConnectionError
 
 from cq.config import load_config
 from cq.search import search_codebase_in_qdrant
@@ -99,9 +100,7 @@ def guess_language_from_extension(file_path: str) -> str:
 def handle_search(args):
     """
     Search subcommand: checks if the collection exists (or multiple),
-    then does a Qdrant query. If there's no collection, prints a friendly
-    message instead of raising a 404. Also includes the collection name
-    above the 'Score:' line in each result.
+    then does a Qdrant query.
     """
     config = load_config()
 
@@ -125,85 +124,97 @@ def handle_search(args):
     else:
         num_results = args.num_results
 
-    ################################################################
-    # Collect results from single or multiple collections
-    ################################################################
-    if args.all_collections:
-        collections_info = client.get_collections()
-        all_collections = [c.name for c in collections_info.collections]
-        if not all_collections:
-            logging.info("[Search] No collections exist in Qdrant. Try embedding first.")
-            return
+    try:
+        ################################################################
+        # Collect results from single or multiple collections
+        ################################################################
+        if args.all_collections:
+            collections_info = client.get_collections()
+            all_collections = [c.name for c in collections_info.collections]
+            if not all_collections:
+                logging.info("[Search] No collections exist in Qdrant. Try embedding first.")
+                return
 
-        logging.debug(f"[Search] Searching across collections: {all_collections}")
+            logging.debug(f"[Search] Searching across collections: {all_collections}")
 
-        merged_points = []
-        total_query_tokens = 0
-        total_snippet_tokens = 0
+            merged_points = []
+            total_query_tokens = 0
+            total_snippet_tokens = 0
 
-        # We'll query each collection, then merge results by score
-        for coll_name in all_collections:
-            sub_results = _safe_search(
+            # We'll query each collection, then merge results by score
+            for coll_name in all_collections:
+                sub_results = _safe_search(
+                    client=client,
+                    collection_name=coll_name,
+                    query=args.query,
+                    top_k=num_results,
+                    embed_model=config["openai_embed_model"],
+                    verbose=args.verbose
+                )
+                if not sub_results:
+                    continue  # skip if empty or nonexistent
+
+                # Label each result with the coll_name
+                for p in sub_results["points"]:
+                    p.payload["collection_name"] = coll_name
+
+                merged_points.extend(sub_results["points"])
+                total_query_tokens += sub_results["query_tokens"]
+                total_snippet_tokens += sub_results["snippet_tokens"]
+
+            # Sort merged by score desc, keep top N
+            merged_points.sort(key=lambda x: x.score, reverse=True)
+            if len(merged_points) > num_results:
+                merged_points = merged_points[:num_results]
+
+            search_results = {
+                "points": merged_points,
+                "query_tokens": total_query_tokens,
+                "snippet_tokens": total_snippet_tokens,
+                "total_tokens": total_query_tokens + total_snippet_tokens,
+            }
+
+        else:
+            # Single-collection approach
+            if args.collection:
+                collection_name = args.collection
+            else:
+                pwd_base = os.path.basename(os.getcwd())
+                collection_name = pwd_base + "_collection"
+
+            # Make sure collection exists
+            if not client.collection_exists(collection_name):
+                logging.info(f"[Search] Collection '{collection_name}' does not exist.")
+                logging.info(f"Try running: cq embed -c {collection_name} [--recreate] to create it first.")
+                return
+
+            search_results = _safe_search(
                 client=client,
-                collection_name=coll_name,
+                collection_name=collection_name,
                 query=args.query,
                 top_k=num_results,
                 embed_model=config["openai_embed_model"],
                 verbose=args.verbose
             )
-            if not sub_results:
-                continue  # skip if empty or nonexistent
+            if not search_results:
+                logging.info("[Search] No data found or collection is empty.")
+                return
 
-            # Label each result with the coll_name
-            for p in sub_results["points"]:
-                p.payload["collection_name"] = coll_name
+            # Label the collection if missing
+            for p in search_results["points"]:
+                if "collection_name" not in p.payload:
+                    p.payload["collection_name"] = collection_name
 
-            merged_points.extend(sub_results["points"])
-            total_query_tokens += sub_results["query_tokens"]
-            total_snippet_tokens += sub_results["snippet_tokens"]
-
-        # Sort merged by score desc, keep top N
-        merged_points.sort(key=lambda x: x.score, reverse=True)
-        if len(merged_points) > num_results:
-            merged_points = merged_points[:num_results]
-
-        search_results = {
-            "points": merged_points,
-            "query_tokens": total_query_tokens,
-            "snippet_tokens": total_snippet_tokens,
-            "total_tokens": total_query_tokens + total_snippet_tokens,
-        }
-
-    else:
-        # Single-collection approach
-        if args.collection:
-            collection_name = args.collection
-        else:
-            pwd_base = os.path.basename(os.getcwd())
-            collection_name = pwd_base + "_collection"
-
-        # Make sure collection exists
-        if not client.collection_exists(collection_name):
-            logging.info(f"[Search] Collection '{collection_name}' does not exist.")
-            logging.info(f"Try running: cq embed -c {collection_name} [--recreate] to create it first.")
-            return
-
-        search_results = _safe_search(
-            client=client,
-            collection_name=collection_name,
-            query=args.query,
-            top_k=num_results,
-            embed_model=config["openai_embed_model"],
-            verbose=args.verbose
-        )
-        if not search_results:
-            logging.info("[Search] No data found or collection is empty.")
-            return
-
-        # Label the collection if missing
-        for p in search_results["points"]:
-            if "collection_name" not in p.payload:
-                p.payload["collection_name"] = collection_name
+    except openai.error.AuthenticationError:
+        logging.error("Invalid OpenAI API key. Please check your OPENAI_API_KEY environment variable.")
+        sys.exit(1)
+    except (openai.error.APIConnectionError, RequestsConnectionError) as e:
+        logging.error(f"Connection error: {e}")
+        logging.error("Please check your internet connection and ensure required services are running.")
+        sys.exit(1)
+    except Exception as e:
+        logging.error(f"Unexpected error: {e}")
+        sys.exit(1)
 
     points = search_results['points']
 
@@ -300,7 +311,7 @@ The structure is:
 
             print("</search_results>")
 
-            # That’s all – we skip normal listing
+            # That's all – we skip normal listing
             return
 
         ################################################################

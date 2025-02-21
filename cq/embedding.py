@@ -4,6 +4,7 @@ import ast
 import time
 import hashlib
 import logging
+import sys
 
 import openai
 import tiktoken
@@ -27,19 +28,25 @@ def count_tokens(text: str, model: str = "gpt-3.5-turbo") -> int:
 
 def openai_with_retry(fn, *args, max_retries=5, base_wait=2, **kwargs):
     """
-    Simple retry logic to handle RateLimitError or Timeout from OpenAI.
+    Enhanced retry logic to handle various OpenAI errors.
     """
     for attempt in range(max_retries):
         try:
             return fn(*args, **kwargs)
-        except openai.error.RateLimitError:
+        except (openai.error.RateLimitError, openai.error.APIError) as e:
             sleep_time = base_wait * (2 ** attempt)
-            logging.warning(f"[RateLimitError] Sleeping {sleep_time}s, attempt {attempt+1}/{max_retries}")
+            logging.warning(f"[OpenAI API Error] Sleeping {sleep_time}s, attempt {attempt+1}/{max_retries}. Error: {e}")
             time.sleep(sleep_time)
         except openai.error.Timeout:
             sleep_time = base_wait * (2 ** attempt)
-            logging.warning(f"[Timeout] Sleeping {sleep_time}s, attempt {attempt+1}/{max_retries}")
+            logging.warning(f"[OpenAI Timeout] Sleeping {sleep_time}s, attempt {attempt+1}/{max_retries}")
             time.sleep(sleep_time)
+        except openai.error.APIConnectionError as e:
+            logging.error(f"Could not connect to OpenAI API. Please check your internet connection. Error: {e}")
+            sys.exit(1)
+        except Exception as e:
+            logging.error(f"Unexpected OpenAI API error: {e}")
+            sys.exit(1)
     raise Exception("[Error] Max retries reached for OpenAI call.")
 
 def chunk_by_line_ranges(
@@ -408,7 +415,7 @@ def index_codebase_in_qdrant(
         vectors = [item["embedding"] for item in resp["data"]]
         return vectors, used_tokens
 
-    # Split into batches so we don’t exceed OpenAI’s request size limit
+    # Split into batches so we don't exceed OpenAI's request size limit
     for start_idx in range(0, len(chunks_to_embed), BATCH_SIZE):
         batch = chunks_to_embed[start_idx:start_idx + BATCH_SIZE]
         texts = [b["code"] for b in batch]

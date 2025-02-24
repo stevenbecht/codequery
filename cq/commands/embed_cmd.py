@@ -136,19 +136,37 @@ def handle_embed(args):
 
         # Summarize per-file
         file_data = {}
+        # We'll also track if any snippet is stale for that file.
         for record in all_points:
             payload = record.payload or {}
             file_path = payload.get("file_path", "unknown_file")
             chunk_tokens = payload.get("chunk_tokens", 0)
 
             if file_path not in file_data:
-                file_data[file_path] = {"total_tokens": 0, "chunk_count": 0}
+                file_data[file_path] = {
+                    "total_tokens": 0,
+                    "chunk_count": 0,
+                    "stale": False,  # We'll mark True if any snippet is stale
+                }
+
             file_data[file_path]["total_tokens"] += chunk_tokens
             file_data[file_path]["chunk_count"] += 1
 
+            # Check if snippet is stale
+            db_file_mod_time = payload.get("file_mod_time", 0.0)
+            try:
+                disk_mod = os.path.getmtime(file_path)
+                if disk_mod > db_file_mod_time:
+                    file_data[file_path]["stale"] = True
+            except Exception:
+                # If we can't get disk time, ignore
+                pass
+
+        # Sort by total_tokens descending
         sorted_files = sorted(file_data.items(), key=lambda x: x[1]["total_tokens"], reverse=True)
 
         logging.info(f"\n=== Files in Collection '{collection_name}' ===")
+        # Determine alignment for tokens
         max_token_digits = 0
         for _, data in sorted_files:
             tstr = str(data['total_tokens'])
@@ -161,13 +179,18 @@ def handle_embed(args):
 
         for file_path, data in sorted_files:
             tokens_fmt = f"{data['total_tokens']:>{max_token_digits}}"
+            stale_col = "Y" if data["stale"] else "N"
             logging.info(
-                f"Tokens: {tokens_fmt} | Chunks: {data['chunk_count']:3d} | File: {file_path}"
+                f"Tokens: {tokens_fmt} | Chunks: {data['chunk_count']:3d} | Stale: {stale_col} | File: {file_path}"
             )
 
         logging.info(f"\nTotal files: {total_files}, total chunks: {grand_total_chunks}, total tokens: {grand_total_tokens}")
 
-        # Show snippet-level detail with timestamps (and warn if outdated)
+        # If not verbose, we're done. Only do snippet-level details if --verbose
+        if not args.verbose:
+            return
+
+        # Verbose => snippet-level detail
         logging.info(f"\n=== Snippet-level details for collection '{collection_name}' ===")
         for record in all_points:
             pl = record.payload or {}

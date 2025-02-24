@@ -122,7 +122,7 @@ def _safe_search(client, collection_name, query, top_k, embed_model, verbose=Fal
 def handle_search(args):
     """
     Search subcommand: checks if the collection exists (or multiple),
-    then does a Qdrant query, prints results (including file/timestamps).
+    then does a Qdrant query, prints results (including STALE columns).
     """
     config = load_config()
 
@@ -244,18 +244,24 @@ def handle_search(args):
         logging.info(f"Try lowering the threshold (current: {args.threshold})")
         return
 
-    # --list mode (file-level listing)
+    # --------------------------------------------------------------------------
+    # LIST MODE
+    # --------------------------------------------------------------------------
     if args.list:
+        # We'll collect data per file, track best score, sum tokens, check stale
         file_data = {}
         for match in filtered_results:
             file_path = match.payload.get("file_path", "unknown_file")
             chunk_tokens = match.payload.get("chunk_tokens", 0)
             score = match.score
+            db_file_mod = match.payload.get("file_mod_time", 0.0)
 
+            # Initialize if not present
             if file_path not in file_data:
                 file_data[file_path] = {
                     "score": score,
-                    "tokens": chunk_tokens
+                    "tokens": chunk_tokens,
+                    "stale": False
                 }
             else:
                 # Update best score if higher
@@ -263,10 +269,19 @@ def handle_search(args):
                     file_data[file_path]["score"] = score
                 file_data[file_path]["tokens"] += chunk_tokens
 
+            # Check stale
+            try:
+                disk_mod = os.path.getmtime(file_path)
+                if disk_mod > db_file_mod:
+                    file_data[file_path]["stale"] = True
+            except Exception:
+                # Ignore if we can't stat the file
+                pass
+
         # Sort by best score
         sorted_files = sorted(file_data.items(), key=lambda x: x[1]["score"], reverse=True)
 
-        # If user wants XML output + dump entire files
+        # If user wants XML + dump entire files
         if args.xml_output and args.dump:
             if args.include_prompt:
                 print("""\
@@ -302,7 +317,6 @@ The structure is:
                 except Exception as e:
                     file_content = f"[ERROR: could not read file: {str(e)}]"
 
-                # Escape any ']]>' inside content
                 safe_content = file_content.replace("]]>", "]]]]><![CDATA[>")
 
                 print("  <codefile>")
@@ -316,13 +330,13 @@ The structure is:
                 print(safe_content, end="" if safe_content.endswith("\n") else "\n")
                 print("]]></content>")
                 print("  </codefile>")
-
             print("</search_results>")
             return
 
-        # Otherwise, plain text file listing
+        # Otherwise, plain text listing
         logging.info(f"\n=== Matching Files (threshold: {args.threshold:.2f}) ===")
 
+        # Figure out alignment for tokens
         max_token_digits = 0
         for _, info in sorted_files:
             tstr = str(info['tokens'])
@@ -333,30 +347,74 @@ The structure is:
         for file_path, info in sorted_files:
             total_tokens_across_files += info["tokens"]
             tokens_formatted = f"{info['tokens']:>{max_token_digits}}"
+            stale_col = "Y" if info["stale"] else "N"
             logging.info(
-                f"Score: {info['score']:.3f} | Tokens: {tokens_formatted} | File: {file_path}"
+                f"Score: {info['score']:.3f} | Tokens: {tokens_formatted} | Stale: {stale_col} | File: {file_path}"
             )
 
         logging.info(f"\n=== Total tokens (across all matched files): {total_tokens_across_files} ===")
 
-        # --dump but no XML => show file contents with BEGIN/END
-        if args.dump and not args.xml_output:
-            for file_path, _info in sorted_files:
+        # If not verbose => done.  If --dump && not XML => do "BEGIN/END" file contents
+        if not args.verbose and not args.dump:
+            return
+
+        # Verbose => show snippet-level detail
+        if args.verbose:
+            logging.info("\n=== Snippet-level details ===")
+            # We'll re-loop over filtered_results and print timestamps
+            for match in filtered_results:
+                pl = match.payload
+                file_path = pl.get("file_path", "unknown_file")
+                start_line = pl.get("start_line", 0)
+                end_line = pl.get("end_line", 0)
+                code_snippet = pl.get("code", "")
+                db_file_mod = pl.get("file_mod_time", 0)
+                db_chunk_embed = pl.get("chunk_embed_time", 0)
+
+                logging.info(f"File: {file_path}, lines {start_line}-{end_line}")
+                logging.info(f"Score: {match.score:.3f}")
+                snippet_print = code_snippet if len(code_snippet) < 200 else code_snippet[:200] + "..."
+                logging.info(f"Snippet:\n{snippet_print}")
+
+                file_mod_dt = datetime.datetime.fromtimestamp(db_file_mod).isoformat() if db_file_mod else "N/A"
+                chunk_embed_dt = datetime.datetime.fromtimestamp(db_chunk_embed).isoformat() if db_chunk_embed else "N/A"
+                logging.info(f"DB file_mod_time: {file_mod_dt}, chunk_embed_time: {chunk_embed_dt}")
+
+                try:
+                    disk_mod = os.path.getmtime(file_path)
+                    if disk_mod > db_file_mod:
+                        logging.info("[WARNING] This snippet may be outdated.")
+                except Exception:
+                    logging.info("[WARNING] Could not determine if snippet is stale.")
+
+                logging.info("------------")
+
+        # If user also specified --dump => do a "BEGIN/END" for each file
+        if args.dump:
+            file_paths_in_results = list(set(match.payload.get("file_path", "unknown_file") for match in filtered_results))
+            for file_path in file_paths_in_results:
                 full_path = os.path.join(os.getcwd(), file_path)
+                if not os.path.isfile(full_path):
+                    logging.warning(f"[Search][List] Cannot dump file. Not on disk: {full_path}")
+                    continue
                 try:
                     with open(full_path, "r", encoding="utf-8") as f:
-                        file_content = f.read()
+                        content = f.read()
                 except Exception as e:
-                    file_content = f"[ERROR: could not read file: {str(e)}]"
+                    logging.warning(f"[Search][List] Error reading {full_path}: {e}")
+                    continue
 
                 print(f"\nBEGIN: {file_path}")
-                print(file_content, end="" if file_content.endswith("\n") else "\n")
+                print(content, end="" if content.endswith("\n") else "\n")
                 print(f"END: {file_path}")
 
         return
 
-    # XML output for snippet-level results
+    # --------------------------------------------------------------------------
+    # NON-LIST MODE => snippet results
+    # --------------------------------------------------------------------------
     if args.xml_output:
+        # XML snippet-level
         if args.include_prompt:
             print("""\
 You are helping me update my codebase based on the following <search_results> (from our local CLI).
@@ -381,7 +439,6 @@ I want you to produce an XML <diff> with a structure like this:
 
 Now here's the raw XML of matched code snippets:
 """)
-
         print("<search_results>")
         for i, match in enumerate(filtered_results, start=1):
             pl = match.payload
@@ -393,7 +450,7 @@ Now here's the raw XML of matched code snippets:
             print(f"    <end_line>{pl.get('end_line','')}</end_line>")
             code_escaped = pl.get('code','').replace('<', '&lt;').replace('>', '&gt;')
             print(f"    <code>{code_escaped}</code>")
-            # Optionally include timestamps in the XML, if desired:
+            # Timestamps
             file_mod_time = pl.get("file_mod_time", 0)
             chunk_embed_time = pl.get("chunk_embed_time", 0)
             print(f"    <file_mod_time>{file_mod_time}</file_mod_time>")
@@ -402,7 +459,7 @@ Now here's the raw XML of matched code snippets:
         print("</search_results>")
         return
 
-    # Normal text-based snippet-level details
+    # Normal text-based snippet results
     logging.debug("=== Qdrant Search Results (Verbose) ===")
     if args.verbose:
         total_matched_tokens = 0
@@ -430,7 +487,6 @@ Now here's the raw XML of matched code snippets:
             snippet_print = code_snippet if len(code_snippet) < 200 else code_snippet[:200] + "..."
             logging.info(f"Snippet:\n{snippet_print}")
 
-            # Show timestamps, warn if outdated
             db_file_mod = pl.get("file_mod_time", 0)
             db_chunk_embed = pl.get("chunk_embed_time", 0)
             file_mod_dt = datetime.datetime.fromtimestamp(db_file_mod).isoformat() if db_file_mod else "N/A"
@@ -467,7 +523,6 @@ Now here's the raw XML of matched code snippets:
             logging.info(f"File: {file_path} | Function: {func_name}")
             logging.info(f"(lines {start_line}-{end_line})\n{code_snippet}")
 
-            # Show timestamps, warn if outdated
             db_file_mod = pl.get("file_mod_time", 0)
             db_chunk_embed = pl.get("chunk_embed_time", 0)
             file_mod_dt = datetime.datetime.fromtimestamp(db_file_mod).isoformat() if db_file_mod else "N/A"

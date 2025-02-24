@@ -1,8 +1,8 @@
-# BEGIN: ./cq/commands/search_cmd.py
 import sys
 import logging
 import openai
 import os
+import datetime
 from requests.exceptions import ConnectionError as RequestsConnectionError
 
 from cq.config import load_config
@@ -97,10 +97,32 @@ def guess_language_from_extension(file_path: str) -> str:
     }
     return ext_map.get(ext, "plaintext")
 
+def _safe_search(client, collection_name, query, top_k, embed_model, verbose=False):
+    """
+    Helper function to do the actual Qdrant query,
+    returning None if the collection is empty or doesn't exist.
+    """
+    if not client.collection_exists(collection_name):
+        logging.info(f"[Search] Collection '{collection_name}' does not exist. Skipping.")
+        return None
+
+    try:
+        return search_codebase_in_qdrant(
+            query=query,
+            collection_name=collection_name,
+            qdrant_client=client,
+            embed_model=embed_model,
+            top_k=top_k,
+            verbose=verbose
+        )
+    except Exception as e:
+        logging.warning(f"[Search] Error searching collection '{collection_name}': {e}")
+        return None
+
 def handle_search(args):
     """
     Search subcommand: checks if the collection exists (or multiple),
-    then does a Qdrant query.
+    then does a Qdrant query, prints results (including file/timestamps).
     """
     config = load_config()
 
@@ -114,7 +136,7 @@ def handle_search(args):
 
     client = get_qdrant_client(config["qdrant_host"], config["qdrant_port"], args.verbose)
 
-    # Figure out how many results we want
+    # Determine how many results to request
     if args.threshold > 0 and not args.num_results:
         num_results = 1000
     elif args.all:
@@ -124,10 +146,8 @@ def handle_search(args):
     else:
         num_results = args.num_results
 
+    # Gather results from one or multiple collections
     try:
-        ################################################################
-        # Collect results from single or multiple collections
-        ################################################################
         if args.all_collections:
             collections_info = client.get_collections()
             all_collections = [c.name for c in collections_info.collections]
@@ -141,7 +161,7 @@ def handle_search(args):
             total_query_tokens = 0
             total_snippet_tokens = 0
 
-            # We'll query each collection, then merge results by score
+            # Query each collection, then merge
             for coll_name in all_collections:
                 sub_results = _safe_search(
                     client=client,
@@ -152,7 +172,7 @@ def handle_search(args):
                     verbose=args.verbose
                 )
                 if not sub_results:
-                    continue  # skip if empty or nonexistent
+                    continue
 
                 # Label each result with the coll_name
                 for p in sub_results["points"]:
@@ -162,7 +182,7 @@ def handle_search(args):
                 total_query_tokens += sub_results["query_tokens"]
                 total_snippet_tokens += sub_results["snippet_tokens"]
 
-            # Sort merged by score desc, keep top N
+            # Sort by score desc and keep top
             merged_points.sort(key=lambda x: x.score, reverse=True)
             if len(merged_points) > num_results:
                 merged_points = merged_points[:num_results]
@@ -175,14 +195,13 @@ def handle_search(args):
             }
 
         else:
-            # Single-collection approach
+            # Single collection
             if args.collection:
                 collection_name = args.collection
             else:
                 pwd_base = os.path.basename(os.getcwd())
                 collection_name = pwd_base + "_collection"
 
-            # Make sure collection exists
             if not client.collection_exists(collection_name):
                 logging.info(f"[Search] Collection '{collection_name}' does not exist.")
                 logging.info(f"Try running: cq embed -c {collection_name} [--recreate] to create it first.")
@@ -218,20 +237,14 @@ def handle_search(args):
 
     points = search_results['points']
 
-    ################################################################
     # Filter results by threshold
-    ################################################################
     filtered_results = [r for r in points if r.score >= args.threshold]
     if not filtered_results:
         logging.info(f"\nNo results found matching the query with threshold {args.threshold}")
         logging.info(f"Try lowering the threshold (current: {args.threshold})")
         return
 
-    ################################################################
-    # 1) --list mode
-    #    a) if --xml-output and --dump => produce <search_results><codefile>...</codefile></search_results>
-    #    b) else normal text listing
-    ################################################################
+    # --list mode (file-level listing)
     if args.list:
         file_data = {}
         for match in filtered_results:
@@ -245,18 +258,16 @@ def handle_search(args):
                     "tokens": chunk_tokens
                 }
             else:
-                # Update best score if this snippet's is higher
+                # Update best score if higher
                 if score > file_data[file_path]["score"]:
                     file_data[file_path]["score"] = score
-                # Add snippet tokens to the total tokens for that file
                 file_data[file_path]["tokens"] += chunk_tokens
 
-        # Sort by best score descending
+        # Sort by best score
         sorted_files = sorted(file_data.items(), key=lambda x: x[1]["score"], reverse=True)
 
-        # If user wants XML output for file dump
+        # If user wants XML output + dump entire files
         if args.xml_output and args.dump:
-            # Possibly include a prompt if requested
             if args.include_prompt:
                 print("""\
 You are helping me by providing an XML dump of the matched files from our local CLI search.
@@ -285,18 +296,15 @@ The structure is:
             for file_path, info in sorted_files:
                 full_path = os.path.join(os.getcwd(), file_path)
                 language = guess_language_from_extension(file_path)
-                # Attempt to read entire file
                 try:
                     with open(full_path, "r", encoding="utf-8") as f:
                         file_content = f.read()
                 except Exception as e:
                     file_content = f"[ERROR: could not read file: {str(e)}]"
 
-                # Escape any ']]>' inside the content to avoid breaking the CDATA
-                # (In practice, you rarely see ']]>' in code, but let's be safe.)
+                # Escape any ']]>' inside content
                 safe_content = file_content.replace("]]>", "]]]]><![CDATA[>")
 
-                # Build <codefile> element
                 print("  <codefile>")
                 print("    <metadata>")
                 print(f"      <filename>{file_path}</filename>")
@@ -310,28 +318,20 @@ The structure is:
                 print("  </codefile>")
 
             print("</search_results>")
-
-            # That's all – we skip normal listing
             return
 
-        ################################################################
-        # Otherwise, if user wants plain text listing or partial dump
-        ################################################################
-
-        # Print text-based summary
+        # Otherwise, plain text file listing
         logging.info(f"\n=== Matching Files (threshold: {args.threshold:.2f}) ===")
 
-        # Determine max width of the 'tokens' column for alignment
         max_token_digits = 0
         for _, info in sorted_files:
-            token_str = str(info['tokens'])
-            if len(token_str) > max_token_digits:
-                max_token_digits = len(token_str)
+            tstr = str(info['tokens'])
+            if len(tstr) > max_token_digits:
+                max_token_digits = len(tstr)
 
         total_tokens_across_files = 0
         for file_path, info in sorted_files:
             total_tokens_across_files += info["tokens"]
-            # Format tokens with right alignment
             tokens_formatted = f"{info['tokens']:>{max_token_digits}}"
             logging.info(
                 f"Score: {info['score']:.3f} | Tokens: {tokens_formatted} | File: {file_path}"
@@ -339,9 +339,9 @@ The structure is:
 
         logging.info(f"\n=== Total tokens (across all matched files): {total_tokens_across_files} ===")
 
-        # If user also specified --dump but not --xml-output, do the "BEGIN/END" style:
+        # --dump but no XML => show file contents with BEGIN/END
         if args.dump and not args.xml_output:
-            for file_path, info in sorted_files:
+            for file_path, _info in sorted_files:
                 full_path = os.path.join(os.getcwd(), file_path)
                 try:
                     with open(full_path, "r", encoding="utf-8") as f:
@@ -355,9 +355,7 @@ The structure is:
 
         return
 
-    ################################################################
-    # 2) If -x / --xml-output but not in -l mode => standard snippet-based XML
-    ################################################################
+    # XML output for snippet-level results
     if args.xml_output:
         if args.include_prompt:
             print("""\
@@ -395,40 +393,59 @@ Now here's the raw XML of matched code snippets:
             print(f"    <end_line>{pl.get('end_line','')}</end_line>")
             code_escaped = pl.get('code','').replace('<', '&lt;').replace('>', '&gt;')
             print(f"    <code>{code_escaped}</code>")
+            # Optionally include timestamps in the XML, if desired:
+            file_mod_time = pl.get("file_mod_time", 0)
+            chunk_embed_time = pl.get("chunk_embed_time", 0)
+            print(f"    <file_mod_time>{file_mod_time}</file_mod_time>")
+            print(f"    <chunk_embed_time>{chunk_embed_time}</chunk_embed_time>")
             print("  </result>")
         print("</search_results>")
         return
 
-    ################################################################
-    # 3) Normal text-based snippet details
-    ################################################################
+    # Normal text-based snippet-level details
     logging.debug("=== Qdrant Search Results (Verbose) ===")
     if args.verbose:
         total_matched_tokens = 0
         for i, match in enumerate(filtered_results, start=1):
             logging.info(f"\n--- Result #{i} ---")
+            logging.info(f"Score: {match.score:.3f}")
 
             pl = match.payload
             coll_label = pl.get("collection_name", "unknown_collection")
             logging.info(f"Collection: {coll_label}")
-            logging.info(f"Score: {match.score:.3f}")
 
             if match.vector is not None:
                 logging.debug(f"Vector (first 8 dims): {match.vector[:8]} ...")
 
-            if pl:
-                file_path = pl.get("file_path", "unknown_file")
-                func_name = pl.get("function_name", "unknown_func")
-                start_line = pl.get("start_line", 0)
-                end_line = pl.get("end_line", 0)
-                code_snippet = pl.get("code", "")
-                chunk_tokens = pl.get("chunk_tokens", 0)
+            file_path = pl.get("file_path", "unknown_file")
+            func_name = pl.get("function_name", "unknown_func")
+            start_line = pl.get("start_line", 0)
+            end_line = pl.get("end_line", 0)
+            code_snippet = pl.get("code", "")
+            chunk_tokens = pl.get("chunk_tokens", 0)
+            total_matched_tokens += chunk_tokens
 
-                total_matched_tokens += chunk_tokens
-                logging.info(f"File: {file_path} | Function: {func_name} (lines {start_line}-{end_line})")
-                logging.info(f"Chunk tokens: {chunk_tokens}")
-                snippet_print = code_snippet if len(code_snippet) < 200 else code_snippet[:200] + "..."
-                logging.info(f"Snippet:\n{snippet_print}\n")
+            logging.info(f"File: {file_path} | Function: {func_name} (lines {start_line}-{end_line})")
+            logging.info(f"Chunk tokens: {chunk_tokens}")
+            snippet_print = code_snippet if len(code_snippet) < 200 else code_snippet[:200] + "..."
+            logging.info(f"Snippet:\n{snippet_print}")
+
+            # Show timestamps, warn if outdated
+            db_file_mod = pl.get("file_mod_time", 0)
+            db_chunk_embed = pl.get("chunk_embed_time", 0)
+            file_mod_dt = datetime.datetime.fromtimestamp(db_file_mod).isoformat() if db_file_mod else "N/A"
+            chunk_embed_dt = datetime.datetime.fromtimestamp(db_chunk_embed).isoformat() if db_chunk_embed else "N/A"
+            logging.info(f"Database file_mod_time: {file_mod_dt}")
+            logging.info(f"Chunk embed time: {chunk_embed_dt}")
+
+            try:
+                disk_mod = os.path.getmtime(file_path)
+                if disk_mod > db_file_mod:
+                    logging.info("[WARNING] This snippet may be outdated (disk mod time is newer).")
+            except Exception as e:
+                logging.debug(f"Could not get disk mod time for {file_path}: {e}")
+
+            logging.info("-------------------------")
 
         logging.info(f"\nTotal matched tokens (sum of 'chunk_tokens'): {total_matched_tokens}")
     else:
@@ -436,10 +453,10 @@ Now here's the raw XML of matched code snippets:
         for i, match in enumerate(filtered_results, start=1):
             pl = match.payload
             logging.info(f"\n--- Result #{i} ---")
+            logging.info(f"Score: {match.score:.3f}")
 
             coll_label = pl.get("collection_name", "unknown_collection")
             logging.info(f"Collection: {coll_label}")
-            logging.info(f"Score: {match.score:.3f}")
 
             file_path = pl.get("file_path", "unknown_file")
             func_name = pl.get("function_name", "unknown_func")
@@ -448,32 +465,24 @@ Now here's the raw XML of matched code snippets:
             code_snippet = pl.get("code", "")
 
             logging.info(f"File: {file_path} | Function: {func_name}")
-            logging.info(f"(lines {start_line}-{end_line})\n{code_snippet}\n")
+            logging.info(f"(lines {start_line}-{end_line})\n{code_snippet}")
+
+            # Show timestamps, warn if outdated
+            db_file_mod = pl.get("file_mod_time", 0)
+            db_chunk_embed = pl.get("chunk_embed_time", 0)
+            file_mod_dt = datetime.datetime.fromtimestamp(db_file_mod).isoformat() if db_file_mod else "N/A"
+            chunk_embed_dt = datetime.datetime.fromtimestamp(db_chunk_embed).isoformat() if db_chunk_embed else "N/A"
+            logging.info(f"Database file_mod_time: {file_mod_dt}")
+            logging.info(f"Chunk embed time: {chunk_embed_dt}")
+
+            try:
+                disk_mod = os.path.getmtime(file_path)
+                if disk_mod > db_file_mod:
+                    logging.info("[WARNING] This snippet may be outdated (disk mod time is newer).")
+            except Exception as e:
+                logging.debug(f"Could not get disk mod time for {file_path}: {e}")
 
     logging.info("\n=== Token Usage ===")
     logging.info(f"Query tokens: {search_results['query_tokens']:,}")
     logging.info(f"Matched snippet tokens: {search_results['snippet_tokens']:,}")
     logging.info(f"Total tokens: {search_results['total_tokens']:,}")
-
-def _safe_search(client, collection_name, query, top_k, embed_model, verbose=False):
-    """
-    Helper function to do the actual Qdrant query,
-    returning None if the collection is empty or doesn't exist.
-    """
-    if not client.collection_exists(collection_name):
-        logging.info(f"[Search] Collection '{collection_name}' does not exist. Skipping.")
-        return None
-
-    try:
-        return search_codebase_in_qdrant(
-            query=query,
-            collection_name=collection_name,
-            qdrant_client=client,
-            embed_model=embed_model,
-            top_k=top_k,
-            verbose=verbose
-        )
-    except Exception as e:
-        logging.warning(f"[Search] Error searching collection '{collection_name}': {e}")
-        return None
-# END: ./cq/commands/search_cmd.py

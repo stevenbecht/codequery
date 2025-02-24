@@ -263,7 +263,6 @@ def chunk_directory(
         for root, dirs, files in os.walk(directory):
             # If .gitignore pattern matches the *directory*, remove it from `dirs` so we skip it entirely
             if gitignore_spec:
-                # We need to modify dirs in-place so os.walk won't descend into them
                 dirs[:] = [
                     d for d in dirs
                     if not gitignore_spec.match_file(os.path.relpath(os.path.join(root, d), directory))
@@ -305,6 +304,7 @@ def index_codebase_in_qdrant(
     If `recreate=True`, forcibly delete and re-create the collection first.
 
     Now also skips any files that match .gitignore in `directory`.
+    Also stores file_mod_time and chunk_embed_time for each snippet.
     """
     # If user wants a fresh index:
     if recreate:
@@ -387,8 +387,15 @@ def index_codebase_in_qdrant(
     chunks_to_embed = []
     for ch in all_chunks:
         snippet_hash = compute_snippet_hash(ch["code"])
+        ch["snippet_hash"] = snippet_hash
+        # NEW: store disk mod time and embed time
+        try:
+            ch["file_mod_time"] = os.path.getmtime(ch["file_path"])
+        except Exception:
+            ch["file_mod_time"] = 0.0
+        ch["chunk_embed_time"] = time.time()
+
         if snippet_hash not in known_hashes:
-            ch["snippet_hash"] = snippet_hash
             chunks_to_embed.append(ch)
         else:
             if verbose:
@@ -433,7 +440,10 @@ def index_codebase_in_qdrant(
                 "end_line": chunk_data["end_line"],
                 "code": chunk_data["code"],
                 "chunk_tokens": snippet_token_count,
-                "snippet_hash": chunk_data["snippet_hash"]
+                "snippet_hash": chunk_data["snippet_hash"],
+                # NEW: store mod time + embed time
+                "file_mod_time": chunk_data["file_mod_time"],
+                "chunk_embed_time": chunk_data["chunk_embed_time"],
             }
             points_to_upsert.append({
                 "id": point_id,

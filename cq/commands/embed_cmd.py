@@ -2,6 +2,7 @@ import sys
 import logging
 import openai
 import os
+import datetime
 
 from cq.config import load_config
 from cq.embedding import index_codebase_in_qdrant
@@ -42,7 +43,7 @@ def register_subparser(subparsers):
         help="Verbose output"
     )
 
-    # NEW: --list and --dump
+    # --list and --dump
     embed_parser.add_argument(
         "-l", "--list", action="store_true",
         help="List all files/snippets currently in the collection (skip embedding)."
@@ -54,18 +55,20 @@ def register_subparser(subparsers):
 
     embed_parser.set_defaults(func=handle_embed)
 
+def _format_timestamp(ts: float) -> str:
+    """Convert a float timestamp to human-readable form."""
+    if ts <= 0:
+        return "N/A"
+    return datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
 
 def handle_embed(args):
     """
     Embeds directories into Qdrant. By default, it does an incremental embed.
 
-    - If --delete is passed, we delete the collection and stop (no embedding).
-      * If not also --force, prompt for confirmation first.
-
-    - If --recreate is passed, we do a fresh index (delete+create+embed).
-
-    - If --list is passed, we skip embedding and simply list everything in the collection
-      (and optionally dump file contents if --dump is also set).
+    - If --delete is passed, delete collection and exit.
+    - If --recreate is passed, do a fresh index (delete+create+embed).
+    - If --list is passed, list everything in the collection (and optionally dump).
+    - Otherwise, do normal embedding.
     """
     config = load_config()
 
@@ -73,7 +76,6 @@ def handle_embed(args):
         logging.error("No valid OPENAI_API_KEY set. Please update your .env or environment.")
         sys.exit(1)
 
-    # Determine collection name
     if args.collection:
         collection_name = args.collection
     else:
@@ -82,39 +84,30 @@ def handle_embed(args):
 
     logging.debug(f"[Embed] Using collection name: {collection_name}")
 
-    # Connect to Qdrant
     client = get_qdrant_client(config["qdrant_host"], config["qdrant_port"], args.verbose)
 
-    ################################################################
-    # 1) If --delete => delete collection and exit
-    ################################################################
+    # 1) --delete => remove collection and stop
     if args.delete:
         if client.collection_exists(collection_name):
             if not args.force:
-                logging.warning(
-                    f"[Embed] WARNING: This will DELETE the entire collection '{collection_name}'."
-                )
+                logging.warning(f"[Embed] WARNING: This will DELETE the entire collection '{collection_name}'.")
                 confirm = input("Proceed? [y/N] ").strip().lower()
                 if confirm not in ("y", "yes"):
                     logging.info("[Embed] Aborting delete. Nothing was changed.")
                     return
-
             logging.debug(f"[Embed] Deleting existing collection '{collection_name}'...")
             client.delete_collection(collection_name)
             logging.info(f"[Embed] Collection '{collection_name}' deleted successfully.")
         else:
             logging.info(f"[Embed] Collection '{collection_name}' does not exist. Nothing to delete.")
-        return  # Stop here; no embedding
+        return
 
-    ################################################################
-    # 2) If --list => list collection contents and exit
-    ################################################################
+    # 2) --list => scroll and list contents
     if args.list:
         if not client.collection_exists(collection_name):
             logging.info(f"[Embed] Collection '{collection_name}' does not exist. Nothing to list.")
             return
 
-        # Scroll all points in the collection
         all_points = []
         limit = 100
         offset = 0
@@ -141,7 +134,7 @@ def handle_embed(args):
             logging.info(f"[Embed][List] No snippets found in '{collection_name}'.")
             return
 
-        # Group by file_path to produce a summary like "search -l"
+        # Summarize per-file
         file_data = {}
         for record in all_points:
             payload = record.payload or {}
@@ -149,23 +142,18 @@ def handle_embed(args):
             chunk_tokens = payload.get("chunk_tokens", 0)
 
             if file_path not in file_data:
-                file_data[file_path] = {
-                    "total_tokens": 0,
-                    "chunk_count": 0,
-                }
+                file_data[file_path] = {"total_tokens": 0, "chunk_count": 0}
             file_data[file_path]["total_tokens"] += chunk_tokens
             file_data[file_path]["chunk_count"] += 1
 
-        # Sort by total_tokens descending
         sorted_files = sorted(file_data.items(), key=lambda x: x[1]["total_tokens"], reverse=True)
 
         logging.info(f"\n=== Files in Collection '{collection_name}' ===")
-        # Determine the maximum width for tokens for alignment
         max_token_digits = 0
         for _, data in sorted_files:
-            token_str = str(data['total_tokens'])
-            if len(token_str) > max_token_digits:
-                max_token_digits = len(token_str)
+            tstr = str(data['total_tokens'])
+            if len(tstr) > max_token_digits:
+                max_token_digits = len(tstr)
 
         total_files = len(sorted_files)
         grand_total_tokens = sum(d["total_tokens"] for _, d in sorted_files)
@@ -179,7 +167,29 @@ def handle_embed(args):
 
         logging.info(f"\nTotal files: {total_files}, total chunks: {grand_total_chunks}, total tokens: {grand_total_tokens}")
 
-        # If --dump => print entire file content from disk (similar to search -l --dump)
+        # Show snippet-level detail with timestamps (and warn if outdated)
+        logging.info(f"\n=== Snippet-level details for collection '{collection_name}' ===")
+        for record in all_points:
+            pl = record.payload or {}
+            file_path = pl.get("file_path","unknown_file")
+            start_line = pl.get("start_line", -1)
+            end_line = pl.get("end_line", -1)
+
+            db_file_mod_time = pl.get("file_mod_time", 0.0)
+            db_chunk_embed_time = pl.get("chunk_embed_time", 0.0)
+
+            logging.info(f"* {file_path} lines {start_line}-{end_line}")
+            logging.info(f"  DB file_mod_time: {_format_timestamp(db_file_mod_time)}")
+            logging.info(f"  DB chunk_embed_time: {_format_timestamp(db_chunk_embed_time)}")
+
+            try:
+                disk_mod = os.path.getmtime(file_path)
+                if disk_mod > db_file_mod_time:
+                    logging.info("  [WARNING] Snippet is older than file on disk.")
+            except Exception:
+                logging.info("  [WARNING] Could not get disk file time for comparison.")
+
+        # If --dump => also print entire local file content
         if args.dump:
             for file_path, _info in sorted_files:
                 full_path = os.path.join(os.getcwd(), file_path)
@@ -187,7 +197,6 @@ def handle_embed(args):
                     logging.warning(f"[Embed][List] Cannot dump file. Not found on disk: {full_path}")
                     continue
 
-                # Attempt to read and dump
                 try:
                     with open(full_path, "r", encoding="utf-8") as f:
                         content = f.read()
@@ -199,19 +208,14 @@ def handle_embed(args):
                 print(content, end="" if content.endswith("\n") else "\n")
                 print(f"END: {file_path}")
 
-        return  # Done listing, no embedding
+        return
 
-    ################################################################
-    # 3) Otherwise, do the normal embedding logic (incremental or recreate)
-    ################################################################
-
-    # If --recreate => forcibly delete then embed anew
+    # 3) Normal embedding (incremental or recreate)
     recreate_flag = False
     if args.recreate:
         recreate_flag = True
         logging.info(f"[Embed] Recreating collection '{collection_name}' before embedding...")
 
-    # Embed each directory in turn
     for directory in args.directories:
         logging.info(f"[Embed] Embedding directory: {directory}")
         index_codebase_in_qdrant(
@@ -224,6 +228,6 @@ def handle_embed(args):
             max_tokens=1500,
             recreate=recreate_flag
         )
-        # After first directory, if we had recreate=True, reset it
+        # Only recreate once, for the first directory
         if recreate_flag:
             recreate_flag = False

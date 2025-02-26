@@ -165,7 +165,7 @@ def handle_embed(args):
         # Sort by total_tokens descending
         sorted_files = sorted(file_data.items(), key=lambda x: x[1]["total_tokens"], reverse=True)
 
-        logging.info(f"\n=== Files in Collection '{collection_name}' ===")
+        logging.info(f"=== Files in Collection '{collection_name}' ===")
         # Determine alignment for tokens
         max_token_digits = 0
         for _, data in sorted_files:
@@ -184,21 +184,21 @@ def handle_embed(args):
                 f"Tokens: {tokens_fmt} | Chunks: {data['chunk_count']:3d} | Stale: {stale_col} | File: {file_path}"
             )
 
-        logging.info(f"\nTotal files: {total_files}, total chunks: {grand_total_chunks}, total tokens: {grand_total_tokens}")
+        logging.info(f"Total files: {total_files}, total chunks: {grand_total_chunks}, total tokens: {grand_total_tokens}")
 
         # If any file is stale, show the warning message
         if any(data["stale"] for _, data in sorted_files):
-            logging.warning("\n" + "=" * 80)
+            logging.warning("=" * 80)
             logging.warning("STALE ENTRIES FOUND - UPDATE EMBEDDINGS FOR BEST RESULTS")
             logging.warning("RUN: cq embed --recreate -r -d .")
-            logging.warning("=" * 80 + "\n")
+            logging.warning("=" * 80)
 
         # If not verbose, we're done. Only do snippet-level details if --verbose
         if not args.verbose:
             return
 
         # Verbose => snippet-level detail
-        logging.info(f"\n=== Snippet-level details for collection '{collection_name}' ===")
+        logging.info(f"=== Snippet-level details for collection '{collection_name}' ===")
         for record in all_points:
             pl = record.payload or {}
             file_path = pl.get("file_path","unknown_file")

@@ -186,6 +186,13 @@ def handle_embed(args):
 
         logging.info(f"\nTotal files: {total_files}, total chunks: {grand_total_chunks}, total tokens: {grand_total_tokens}")
 
+        # If any file is stale, show the warning message
+        if any(data["stale"] for _, data in sorted_files):
+            logging.warning("\n" + "=" * 80)
+            logging.warning("STALE ENTRIES FOUND - UPDATE EMBEDDINGS FOR BEST RESULTS")
+            logging.warning("RUN: cq embed --recreate -r -d .")
+            logging.warning("=" * 80 + "\n")
+
         # If not verbose, we're done. Only do snippet-level details if --verbose
         if not args.verbose:
             return

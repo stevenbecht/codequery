@@ -353,6 +353,13 @@ The structure is:
             )
 
         logging.info(f"\n=== Total tokens (across all matched files): {total_tokens_across_files} ===")
+        
+        # If any file is stale, show the warning message
+        if any(info["stale"] for _, info in sorted_files):
+            logging.warning("\n" + "=" * 80)
+            logging.warning("STALE ENTRIES FOUND - UPDATE EMBEDDINGS FOR BEST RESULTS")
+            logging.warning("RUN: cq embed --recreate -r -d .")
+            logging.warning("=" * 80 + "\n")
 
         # If not verbose => done.  If --dump && not XML => do "BEGIN/END" file contents
         if not args.verbose and not args.dump:
@@ -541,3 +548,24 @@ Now here's the raw XML of matched code snippets:
     logging.info(f"Query tokens: {search_results['query_tokens']:,}")
     logging.info(f"Matched snippet tokens: {search_results['snippet_tokens']:,}")
     logging.info(f"Total tokens: {search_results['total_tokens']:,}")
+    
+    # Check if any snippet is stale and show the warning message
+    stale_snippets_found = False
+    for match in filtered_results:
+        try:
+            db_file_mod_time = match.payload.get("file_mod_time", 0.0)
+            file_path = match.payload.get("file_path", "")
+            if file_path and os.path.exists(file_path):
+                disk_mod_time = os.path.getmtime(file_path)
+                if disk_mod_time > db_file_mod_time:
+                    stale_snippets_found = True
+                    break
+        except Exception:
+            pass
+    
+    # Show warning if any stale snippets were found
+    if stale_snippets_found:
+        logging.warning("\n" + "=" * 80)
+        logging.warning("STALE ENTRIES FOUND - UPDATE EMBEDDINGS FOR BEST RESULTS")
+        logging.warning("RUN: cq embed --recreate -r -d .")
+        logging.warning("=" * 80)

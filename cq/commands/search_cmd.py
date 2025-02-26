@@ -334,7 +334,7 @@ The structure is:
             return
 
         # Otherwise, plain text listing
-        logging.info(f"\n=== Matching Files (threshold: {args.threshold:.2f}) ===")
+        logging.info(f"=== Matching Files (threshold: {args.threshold:.2f}) ===")
 
         # Figure out alignment for tokens
         max_token_digits = 0
@@ -352,14 +352,14 @@ The structure is:
                 f"Score: {info['score']:.3f} | Tokens: {tokens_formatted} | Stale: {stale_col} | File: {file_path}"
             )
 
-        logging.info(f"\n=== Total tokens (across all matched files): {total_tokens_across_files} ===")
+        logging.info(f"=== Total tokens (across all matched files): {total_tokens_across_files} ===")
         
         # If any file is stale, show the warning message
         if any(info["stale"] for _, info in sorted_files):
-            logging.warning("\n" + "=" * 80)
+            logging.warning("=" * 80)
             logging.warning("STALE ENTRIES FOUND - UPDATE EMBEDDINGS FOR BEST RESULTS")
             logging.warning("RUN: cq embed --recreate -r -d .")
-            logging.warning("=" * 80 + "\n")
+            logging.warning("=" * 80)
 
         # If not verbose => done.  If --dump && not XML => do "BEGIN/END" file contents
         if not args.verbose and not args.dump:
@@ -367,7 +367,7 @@ The structure is:
 
         # Verbose => show snippet-level detail
         if args.verbose:
-            logging.info("\n=== Snippet-level details ===")
+            logging.info("=== Snippet-level details ===")
             # We'll re-loop over filtered_results and print timestamps
             for match in filtered_results:
                 pl = match.payload
@@ -390,11 +390,11 @@ The structure is:
                 try:
                     disk_mod = os.path.getmtime(file_path)
                     if disk_mod > db_file_mod:
-                        logging.info("[WARNING] This snippet may be outdated.")
-                except Exception:
-                    logging.info("[WARNING] Could not determine if snippet is stale.")
+                        logging.info("[WARNING] This snippet may be outdated (disk mod time is newer).")
+                except Exception as e:
+                    logging.debug(f"Could not get disk mod time for {file_path}: {e}")
 
-                logging.info("------------")
+                logging.info("-------------------------")
 
         # If user also specified --dump => do a "BEGIN/END" for each file
         if args.dump:
@@ -471,7 +471,7 @@ Now here's the raw XML of matched code snippets:
     if args.verbose:
         total_matched_tokens = 0
         for i, match in enumerate(filtered_results, start=1):
-            logging.info(f"\n--- Result #{i} ---")
+            logging.info(f"--- Result #{i} ---")
             logging.info(f"Score: {match.score:.3f}")
 
             pl = match.payload
@@ -510,12 +510,12 @@ Now here's the raw XML of matched code snippets:
 
             logging.info("-------------------------")
 
-        logging.info(f"\nTotal matched tokens (sum of 'chunk_tokens'): {total_matched_tokens}")
+        logging.info(f"Total matched tokens (sum of 'chunk_tokens'): {total_matched_tokens}")
     else:
-        logging.info(f"=== Matched Snippets (threshold: {args.threshold:.2f}) ===")
+        logging.info("=== Matched Snippets (threshold: {args.threshold:.2f}) ===")
         for i, match in enumerate(filtered_results, start=1):
             pl = match.payload
-            logging.info(f"\n--- Result #{i} ---")
+            logging.info(f"--- Result #{i} ---")
             logging.info(f"Score: {match.score:.3f}")
 
             coll_label = pl.get("collection_name", "unknown_collection")
@@ -544,7 +544,7 @@ Now here's the raw XML of matched code snippets:
             except Exception as e:
                 logging.debug(f"Could not get disk mod time for {file_path}: {e}")
 
-    logging.info("\n=== Token Usage ===")
+    logging.info("=== Token Usage ===")
     logging.info(f"Query tokens: {search_results['query_tokens']:,}")
     logging.info(f"Matched snippet tokens: {search_results['snippet_tokens']:,}")
     logging.info(f"Total tokens: {search_results['total_tokens']:,}")
@@ -565,7 +565,7 @@ Now here's the raw XML of matched code snippets:
     
     # Show warning if any stale snippets were found
     if stale_snippets_found:
-        logging.warning("\n" + "=" * 80)
+        logging.warning("=" * 80)
         logging.warning("STALE ENTRIES FOUND - UPDATE EMBEDDINGS FOR BEST RESULTS")
         logging.warning("RUN: cq embed --recreate -r -d .")
         logging.warning("=" * 80)

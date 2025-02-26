@@ -193,33 +193,31 @@ def handle_embed(args):
             logging.warning("RUN: cq embed --recreate -r -d .")
             logging.warning("=" * 80)
 
-        # If not verbose, we're done. Only do snippet-level details if --verbose
-        if not args.verbose:
-            return
+        # Only show snippet-level details if verbose mode is on
+        if args.verbose:
+            # Verbose => snippet-level detail
+            logging.info(f"=== Snippet-level details for collection '{collection_name}' ===")
+            for record in all_points:
+                pl = record.payload or {}
+                file_path = pl.get("file_path","unknown_file")
+                start_line = pl.get("start_line", -1)
+                end_line = pl.get("end_line", -1)
 
-        # Verbose => snippet-level detail
-        logging.info(f"=== Snippet-level details for collection '{collection_name}' ===")
-        for record in all_points:
-            pl = record.payload or {}
-            file_path = pl.get("file_path","unknown_file")
-            start_line = pl.get("start_line", -1)
-            end_line = pl.get("end_line", -1)
+                db_file_mod_time = pl.get("file_mod_time", 0.0)
+                db_chunk_embed_time = pl.get("chunk_embed_time", 0.0)
 
-            db_file_mod_time = pl.get("file_mod_time", 0.0)
-            db_chunk_embed_time = pl.get("chunk_embed_time", 0.0)
+                logging.info(f"* {file_path} lines {start_line}-{end_line}")
+                logging.info(f"  DB file_mod_time: {_format_timestamp(db_file_mod_time)}")
+                logging.info(f"  DB chunk_embed_time: {_format_timestamp(db_chunk_embed_time)}")
 
-            logging.info(f"* {file_path} lines {start_line}-{end_line}")
-            logging.info(f"  DB file_mod_time: {_format_timestamp(db_file_mod_time)}")
-            logging.info(f"  DB chunk_embed_time: {_format_timestamp(db_chunk_embed_time)}")
+                try:
+                    disk_mod = os.path.getmtime(file_path)
+                    if disk_mod > db_file_mod_time:
+                        logging.info("  [WARNING] Snippet is older than file on disk.")
+                except Exception:
+                    logging.info("  [WARNING] Could not get disk file time for comparison.")
 
-            try:
-                disk_mod = os.path.getmtime(file_path)
-                if disk_mod > db_file_mod_time:
-                    logging.info("  [WARNING] Snippet is older than file on disk.")
-            except Exception:
-                logging.info("  [WARNING] Could not get disk file time for comparison.")
-
-        # If --dump => also print entire local file content
+        # File dumping is independent of verbose mode - should run with --dump flag
         if args.dump:
             for file_path, _info in sorted_files:
                 full_path = os.path.join(os.getcwd(), file_path)

@@ -43,7 +43,7 @@ def register_subparser(subparsers):
     )
     chat_parser.add_argument(
         "-c", "--collection", type=str, default=None,
-        help="Name of the Qdrant collection to chat over. Defaults to basename(pwd)_collection."
+        help="Name of the Qdrant collection to chat over. Defaults to auto-detect from root_dir or basename(pwd)."
     )
     chat_parser.add_argument(
         "-v", "--verbose", action="store_true",
@@ -58,6 +58,48 @@ def register_subparser(subparsers):
         help="Reasoning effort level for o3-mini model (default: medium)"
     )
     chat_parser.set_defaults(func=handle_chat)
+
+def _find_collection_for_current_dir(client, current_dir):
+    """
+    Same logic as in search_cmd.py - auto-detect which Qdrant collection
+    corresponds to 'current_dir' by checking the 'collection_meta' root_dir.
+    """
+    try:
+        collections_info = client.get_collections()
+        all_collections = [c.name for c in collections_info.collections]
+        best_match = None
+        best_len = 0
+
+        for coll_name in all_collections:
+            # Scroll or query to find the special metadata record:
+            try:
+                points_batch, _ = client.scroll(
+                    collection_name=coll_name,
+                    limit=1_000,
+                    with_payload=True,
+                    with_vectors=False
+                )
+                for p in points_batch:
+                    pl = p.payload
+                    if not pl:
+                        continue
+                    if pl.get("collection_meta") and "root_dir" in pl:
+                        root_dir = os.path.abspath(pl["root_dir"])
+                        cur_dir_abs = os.path.abspath(current_dir)
+                        common = os.path.commonpath([root_dir, cur_dir_abs])
+                        if common == root_dir:
+                            # current_dir is inside root_dir
+                            rlen = len(root_dir)
+                            if rlen > best_len:
+                                best_len = rlen
+                                best_match = coll_name
+            except:
+                pass
+
+        return best_match
+    except Exception as e:
+        logging.debug(f"[Chat] Error in _find_collection_for_current_dir: {e}")
+        return None
 
 def handle_chat(args):
     """
@@ -119,7 +161,6 @@ def handle_chat(args):
                 logging.debug("[Chat] Received input from stdin (no context mode)")
 
         # Combine the stdin snippet with the user-provided query
-        # If user didn't provide --query, rely only on stdin content
         full_query = args.query or ""
         if stdin_content:
             if full_query:
@@ -158,17 +199,22 @@ def handle_chat(args):
     # Otherwise, proceed with normal context-based Qdrant logic
     ################################################################
 
-    # Derive the target collection name
+    client = get_qdrant_client(config["qdrant_host"], config["qdrant_port"], args.verbose)
+
+    # If user provided a collection, we trust that directly
     if args.collection:
         collection_name = args.collection
+        logging.debug(f"[Chat] Using user-provided collection: {collection_name}")
     else:
-        pwd_base = os.path.basename(os.getcwd())
-        collection_name = pwd_base + "_collection"
-
-    logging.debug(f"[Chat] Using collection name: {collection_name}")
-
-    # Connect to Qdrant
-    client = get_qdrant_client(config["qdrant_host"], config["qdrant_port"], args.verbose)
+        # Attempt auto-detection
+        auto_coll = _find_collection_for_current_dir(client, os.getcwd())
+        if auto_coll:
+            collection_name = auto_coll
+            logging.debug(f"[Chat] Auto-detected collection '{collection_name}' for current directory.")
+        else:
+            pwd_base = os.path.basename(os.getcwd())
+            collection_name = pwd_base + "_collection"
+            logging.debug(f"[Chat] No auto-detected match. Default to: {collection_name}")
 
     # Check if collection exists (avoid 404 from Qdrant)
     if not client.collection_exists(collection_name):
@@ -189,9 +235,13 @@ def handle_chat(args):
             logging.debug("[Chat] Received input from stdin")
 
     # Combine the stdin snippet with the user-provided query
-    full_query = args.query
+    full_query = args.query or ""
     if stdin_content:
-        full_query = f"Here is the content I'm asking about:\n\n{stdin_content}\n\nMy question: {args.query}"
+        if full_query:
+            full_query = f"Here is the content I'm asking about:\n\n{stdin_content}\n\nMy question: {full_query}"
+        else:
+            # If somehow --query wasn't specified, but we have stdin, treat that as the entire prompt
+            full_query = stdin_content
 
     start_time = time.time()
 

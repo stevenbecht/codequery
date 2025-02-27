@@ -288,6 +288,37 @@ def compute_snippet_hash(text: str) -> str:
     """Compute a hash (MD5) for the snippet text to detect changes."""
     return hashlib.md5(text.encode("utf-8")).hexdigest()
 
+def _store_collection_root_metadata(
+    qdrant_client: QdrantClient,
+    collection_name: str,
+    root_dir: str
+):
+    """
+    Upsert a special metadata point indicating the root_dir for this collection,
+    so that we can later detect if the user is in a descendant folder.
+    """
+    # We'll just store a dummy 1536-dim vector of zeros:
+    dummy_vec = [0.0] * 1536
+    payload = {
+        "collection_meta": True,
+        "root_dir": os.path.abspath(root_dir)
+    }
+    # We'll pick point ID = 0 for convenience
+    try:
+        qdrant_client.upsert(
+            collection_name=collection_name,
+            points=[
+                {
+                    "id": 0,
+                    "vector": dummy_vec,
+                    "payload": payload
+                }
+            ]
+        )
+        logging.debug(f"[Index] Stored collection root metadata for '{collection_name}' => {payload['root_dir']}")
+    except Exception as e:
+        logging.warning(f"[Index] Could not store root metadata in '{collection_name}': {e}")
+
 def index_codebase_in_qdrant(
     directory: str,
     collection_name: str,
@@ -305,6 +336,9 @@ def index_codebase_in_qdrant(
 
     Now also skips any files that match .gitignore in `directory`.
     Also stores file_mod_time and chunk_embed_time for each snippet.
+
+    NEW: We also store a single "metadata" point with "root_dir" so that
+    child folders can auto-detect the correct collection to use at query time.
     """
     # If user wants a fresh index:
     if recreate:
@@ -347,6 +381,9 @@ def index_codebase_in_qdrant(
             if verbose:
                 logging.debug(f"[Index] Incremental mode: found {len(known_hashes)} existing snippet hashes.")
 
+    # Store or refresh the root dir metadata
+    _store_collection_root_metadata(qdrant_client, collection_name, directory)
+
     all_chunks = list(
         chunk_directory(
             directory=directory,
@@ -361,7 +398,7 @@ def index_codebase_in_qdrant(
 
     # Find the next point_id to assign:
     if recreate:
-        point_id = 0
+        point_id = 1  # because we used 0 for the metadata
     else:
         # get max existing ID
         max_id = 0

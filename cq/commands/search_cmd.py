@@ -45,7 +45,7 @@ def register_subparser(subparsers):
     )
     search_parser.add_argument(
         "-c", "--collection", type=str, default=None,
-        help="Name of a specific Qdrant collection to search. Defaults to basename(pwd)_collection if not set."
+        help="Name of a specific Qdrant collection to search. Defaults to auto-detect from root_dir or basename(pwd)."
     )
     search_parser.add_argument(
         "-v", "--verbose", action="store_true",
@@ -119,6 +119,53 @@ def _safe_search(client, collection_name, query, top_k, embed_model, verbose=Fal
         logging.warning(f"[Search] Error searching collection '{collection_name}': {e}")
         return None
 
+def _find_collection_for_current_dir(client, current_dir):
+    """
+    Attempt to auto-detect which Qdrant collection corresponds
+    to 'current_dir' by checking any 'collection_meta' root_dir
+    payload in each collection. We pick the one for which
+    root_dir is an ancestor of current_dir (commonpath == root_dir).
+    If multiple match, pick the longest root_dir.
+    Return the matching collection name, or None if none found.
+    """
+    try:
+        collections_info = client.get_collections()
+        all_collections = [c.name for c in collections_info.collections]
+        best_match = None
+        best_len = 0
+
+        for coll_name in all_collections:
+            # Scroll or query to find the special metadata record:
+            try:
+                points_batch, _ = client.scroll(
+                    collection_name=coll_name,
+                    limit=1_000,  # in small codebases, 1000 is enough to find id=0 easily
+                    with_payload=True,
+                    with_vectors=False
+                )
+                for p in points_batch:
+                    pl = p.payload
+                    if not pl:
+                        continue
+                    # Check if this is the "collection_meta" record
+                    if pl.get("collection_meta") and "root_dir" in pl:
+                        root_dir = os.path.abspath(pl["root_dir"])
+                        cur_dir_abs = os.path.abspath(current_dir)
+                        common = os.path.commonpath([root_dir, cur_dir_abs])
+                        if common == root_dir:
+                            # current_dir is inside root_dir or equal to it
+                            rlen = len(root_dir)
+                            if rlen > best_len:
+                                best_len = rlen
+                                best_match = coll_name
+            except:
+                pass
+
+        return best_match
+    except Exception as e:
+        logging.debug(f"[Search] Error in _find_collection_for_current_dir: {e}")
+        return None
+
 def handle_search(args):
     """
     Search subcommand: checks if the collection exists (or multiple),
@@ -146,9 +193,9 @@ def handle_search(args):
     else:
         num_results = args.num_results
 
-    # Gather results from one or multiple collections
-    try:
-        if args.all_collections:
+    # If user wants to search all collections, handle that:
+    if args.all_collections:
+        try:
             collections_info = client.get_collections()
             all_collections = [c.name for c in collections_info.collections]
             if not all_collections:
@@ -194,19 +241,33 @@ def handle_search(args):
                 "total_tokens": total_query_tokens + total_snippet_tokens,
             }
 
+        except openai.error.AuthenticationError:
+            logging.error("Invalid OpenAI API key. Please check your OPENAI_API_KEY environment variable.")
+            sys.exit(1)
+        except (openai.error.APIConnectionError, RequestsConnectionError) as e:
+            logging.error(f"Connection error: {e}")
+            logging.error("Please check your internet connection and ensure required services are running.")
+            sys.exit(1)
+        except Exception as e:
+            logging.error(f"Unexpected error: {e}")
+            sys.exit(1)
+
+    else:
+        # Single collection => auto-detect or user-specified
+        if args.collection:
+            collection_name = args.collection
+            logging.debug(f"[Search] Using user-provided collection name: {collection_name}")
         else:
-            # Single collection
-            if args.collection:
-                collection_name = args.collection
+            auto_coll = _find_collection_for_current_dir(client, os.getcwd())
+            if auto_coll:
+                collection_name = auto_coll
+                logging.debug(f"[Search] Auto-detected collection '{collection_name}' for current directory.")
             else:
                 pwd_base = os.path.basename(os.getcwd())
                 collection_name = pwd_base + "_collection"
+                logging.debug(f"[Search] No auto-detected match. Default to: {collection_name}")
 
-            if not client.collection_exists(collection_name):
-                logging.info(f"[Search] Collection '{collection_name}' does not exist.")
-                logging.info(f"Try running: cq embed -c {collection_name} [--recreate] to create it first.")
-                return
-
+        try:
             search_results = _safe_search(
                 client=client,
                 collection_name=collection_name,
@@ -224,16 +285,16 @@ def handle_search(args):
                 if "collection_name" not in p.payload:
                     p.payload["collection_name"] = collection_name
 
-    except openai.error.AuthenticationError:
-        logging.error("Invalid OpenAI API key. Please check your OPENAI_API_KEY environment variable.")
-        sys.exit(1)
-    except (openai.error.APIConnectionError, RequestsConnectionError) as e:
-        logging.error(f"Connection error: {e}")
-        logging.error("Please check your internet connection and ensure required services are running.")
-        sys.exit(1)
-    except Exception as e:
-        logging.error(f"Unexpected error: {e}")
-        sys.exit(1)
+        except openai.error.AuthenticationError:
+            logging.error("Invalid OpenAI API key. Please check your OPENAI_API_KEY environment variable.")
+            sys.exit(1)
+        except (openai.error.APIConnectionError, RequestsConnectionError) as e:
+            logging.error(f"Connection error: {e}")
+            logging.error("Please check your internet connection and ensure required services are running.")
+            sys.exit(1)
+        except Exception as e:
+            logging.error(f"Unexpected error: {e}")
+            sys.exit(1)
 
     points = search_results['points']
 

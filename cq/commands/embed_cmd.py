@@ -36,7 +36,7 @@ def register_subparser(subparsers):
     )
     embed_parser.add_argument(
         "-c", "--collection", type=str, default=None,
-        help="Name of the Qdrant collection. Defaults to basename(pwd)_collection."
+        help="Name of the Qdrant collection. Auto-detected if not provided."
     )
     embed_parser.add_argument(
         "-v", "--verbose", action="store_true",
@@ -57,9 +57,54 @@ def register_subparser(subparsers):
 
 def _format_timestamp(ts: float) -> str:
     """Convert a float timestamp to human-readable form."""
+    import datetime
     if ts <= 0:
         return "N/A"
     return datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
+
+def _find_collection_for_current_dir(client, current_dir):
+    """
+    Auto-detect which Qdrant collection corresponds to 'current_dir'
+    by checking the special 'collection_meta' record that stores 'root_dir'.
+    If multiple matches, pick the one with the longest root_dir (most specific).
+    Return the matching collection name, or None if none found.
+    """
+    try:
+        collections_info = client.get_collections()
+        all_collections = [c.name for c in collections_info.collections]
+        best_match = None
+        best_len = 0
+
+        for coll_name in all_collections:
+            # We'll scroll to find that metadata record
+            try:
+                points_batch, _ = client.scroll(
+                    collection_name=coll_name,
+                    limit=1000,  # should be enough to find id=0 if it exists
+                    with_payload=True,
+                    with_vectors=False
+                )
+                for p in points_batch:
+                    pl = p.payload
+                    if not pl:
+                        continue
+                    if pl.get("collection_meta") and "root_dir" in pl:
+                        root_dir = os.path.abspath(pl["root_dir"])
+                        cur_dir_abs = os.path.abspath(current_dir)
+                        common = os.path.commonpath([root_dir, cur_dir_abs])
+                        if common == root_dir:
+                            # current_dir is inside root_dir
+                            rlen = len(root_dir)
+                            if rlen > best_len:
+                                best_len = rlen
+                                best_match = coll_name
+            except:
+                pass
+
+        return best_match
+    except Exception as e:
+        logging.debug(f"[Embed] Error in _find_collection_for_current_dir: {e}")
+        return None
 
 def handle_embed(args):
     """
@@ -69,6 +114,9 @@ def handle_embed(args):
     - If --recreate is passed, do a fresh index (delete+create+embed).
     - If --list is passed, list everything in the collection (and optionally dump).
     - Otherwise, do normal embedding.
+    
+    Now also tries to auto-detect the matching collection for your current directory
+    if you don't provide a specific --collection.
     """
     config = load_config()
 
@@ -76,15 +124,21 @@ def handle_embed(args):
         logging.error("No valid OPENAI_API_KEY set. Please update your .env or environment.")
         sys.exit(1)
 
+    client = get_qdrant_client(config["qdrant_host"], config["qdrant_port"], args.verbose)
+
+    # Determine which collection to use
     if args.collection:
         collection_name = args.collection
+        logging.debug(f"[Embed] Using user-specified collection: {collection_name}")
     else:
-        pwd_base = os.path.basename(os.getcwd())
-        collection_name = pwd_base + "_collection"
-
-    logging.debug(f"[Embed] Using collection name: {collection_name}")
-
-    client = get_qdrant_client(config["qdrant_host"], config["qdrant_port"], args.verbose)
+        auto_coll = _find_collection_for_current_dir(client, os.getcwd())
+        if auto_coll:
+            collection_name = auto_coll
+            logging.debug(f"[Embed] Auto-detected collection '{collection_name}' for current directory.")
+        else:
+            pwd_base = os.path.basename(os.getcwd())
+            collection_name = pwd_base + "_collection"
+            logging.debug(f"[Embed] No auto-detected match. Default to: {collection_name}")
 
     # 1) --delete => remove collection and stop
     if args.delete:
@@ -136,9 +190,12 @@ def handle_embed(args):
 
         # Summarize per-file
         file_data = {}
-        # We'll also track if any snippet is stale for that file.
         for record in all_points:
             payload = record.payload or {}
+            if payload.get("collection_meta"):
+                # This is our special metadata point for root_dir
+                continue
+
             file_path = payload.get("file_path", "unknown_file")
             chunk_tokens = payload.get("chunk_tokens", 0)
 
@@ -146,7 +203,7 @@ def handle_embed(args):
                 file_data[file_path] = {
                     "total_tokens": 0,
                     "chunk_count": 0,
-                    "stale": False,  # We'll mark True if any snippet is stale
+                    "stale": False,
                 }
 
             file_data[file_path]["total_tokens"] += chunk_tokens
@@ -195,21 +252,21 @@ def handle_embed(args):
 
         # Only show snippet-level details if verbose mode is on
         if args.verbose:
-            # Verbose => snippet-level detail
             logging.info(f"=== Snippet-level details for collection '{collection_name}' ===")
             for record in all_points:
                 pl = record.payload or {}
+                if pl.get("collection_meta"):
+                    continue
+
                 file_path = pl.get("file_path","unknown_file")
                 start_line = pl.get("start_line", -1)
                 end_line = pl.get("end_line", -1)
-
                 db_file_mod_time = pl.get("file_mod_time", 0.0)
                 db_chunk_embed_time = pl.get("chunk_embed_time", 0.0)
 
                 logging.info(f"* {file_path} lines {start_line}-{end_line}")
                 logging.info(f"  DB file_mod_time: {_format_timestamp(db_file_mod_time)}")
                 logging.info(f"  DB chunk_embed_time: {_format_timestamp(db_chunk_embed_time)}")
-
                 try:
                     disk_mod = os.path.getmtime(file_path)
                     if disk_mod > db_file_mod_time:
@@ -217,7 +274,7 @@ def handle_embed(args):
                 except Exception:
                     logging.info("  [WARNING] Could not get disk file time for comparison.")
 
-        # File dumping is independent of verbose mode - should run with --dump flag
+        # File dumping is independent of verbose mode
         if args.dump:
             for file_path, _info in sorted_files:
                 full_path = os.path.join(os.getcwd(), file_path)
@@ -239,9 +296,8 @@ def handle_embed(args):
         return
 
     # 3) Normal embedding (incremental or recreate)
-    recreate_flag = False
-    if args.recreate:
-        recreate_flag = True
+    recreate_flag = bool(args.recreate)
+    if recreate_flag:
         logging.info(f"[Embed] Recreating collection '{collection_name}' before embedding...")
 
     for directory in args.directories:
@@ -256,6 +312,6 @@ def handle_embed(args):
             max_tokens=1500,
             recreate=recreate_flag
         )
-        # Only recreate once, for the first directory
+        # Only recreate once (for first directory, if multiple were provided)
         if recreate_flag:
             recreate_flag = False

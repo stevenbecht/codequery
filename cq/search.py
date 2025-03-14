@@ -1,5 +1,6 @@
 import logging
 import openai
+from openai import OpenAI
 from qdrant_client import QdrantClient
 
 from .embedding import count_tokens
@@ -15,7 +16,8 @@ def search_codebase_in_qdrant(
     """Embed `query`, search Qdrant for top_k results."""
     # Get query embedding and count tokens
     query_tokens = count_tokens(query, embed_model)
-    query_emb = openai.Embedding.create(model=embed_model, input=query)["data"][0]["embedding"]
+    client = OpenAI()
+    query_emb = client.embeddings.create(model=embed_model, input=query).data[0].embedding
     
     response = qdrant_client.query_points(
         collection_name=collection_name,
@@ -143,7 +145,8 @@ def chat_with_context(
             {"role": "user", "content": f"Relevant code:\n{context_text}\n\nUser query: {query}"}
         ]
         # Add reasoning_effort parameter for o3-mini model
-        resp = openai.ChatCompletion.create(
+        client = OpenAI()
+        resp = client.chat.completions.create(
             model=chat_model,
             messages=messages,
             reasoning_effort=reasoning_effort
@@ -152,7 +155,7 @@ def chat_with_context(
         
         # Calculate token usage
         prompt_tokens = sum(count_tokens(m["content"], chat_model) for m in messages)
-        completion_tokens = count_tokens(resp["choices"][0]["message"]["content"], chat_model)
+        completion_tokens = count_tokens(resp.choices[0].message.content, chat_model)
         total_tokens = prompt_tokens + completion_tokens
         
         logging.info("\n=== Detailed Timing & Usage ===")
@@ -162,7 +165,7 @@ def chat_with_context(
         logging.info(f"Chat tokens (prompt): {prompt_tokens:,} tokens")
         logging.info(f"Chat tokens (completion): {completion_tokens:,} tokens")
         logging.info(f"Chat tokens (total): {total_tokens:,} tokens")
-        return resp["choices"][0]["message"]["content"]
+        return resp.choices[0].message.content
     else:
         messages = [
             {"role": "system", "content": "You are a helpful coding assistant."},
@@ -177,12 +180,13 @@ def chat_with_context(
             logging.debug("---")
 
     # Standard call for non-o3-mini models
-    resp = openai.ChatCompletion.create(model=chat_model, messages=messages)
+    client = OpenAI()
+    resp = client.chat.completions.create(model=chat_model, messages=messages)
     chat_time = time.time() - chat_start
     
     # Calculate token usage
     prompt_tokens = sum(count_tokens(m["content"], chat_model) for m in messages)
-    completion_tokens = count_tokens(resp["choices"][0]["message"]["content"], chat_model)
+    completion_tokens = count_tokens(resp.choices[0].message.content, chat_model)
     total_tokens = prompt_tokens + completion_tokens
     
     logging.info("\n=== Detailed Timing & Usage ===")
@@ -193,4 +197,4 @@ def chat_with_context(
     logging.info(f"Chat tokens (completion): {completion_tokens:,} tokens")
     logging.info(f"Chat tokens (total): {total_tokens:,} tokens")
     
-    return resp["choices"][0]["message"]["content"]
+    return resp.choices[0].message.content

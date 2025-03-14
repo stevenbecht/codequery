@@ -1,6 +1,7 @@
 import sys
 import logging
 import openai
+from openai import OpenAI
 import os
 import datetime
 from requests.exceptions import ConnectionError as RequestsConnectionError
@@ -241,10 +242,10 @@ def handle_search(args):
                 "total_tokens": total_query_tokens + total_snippet_tokens,
             }
 
-        except openai.error.AuthenticationError:
+        except openai.AuthenticationError:
             logging.error("Invalid OpenAI API key. Please check your OPENAI_API_KEY environment variable.")
             sys.exit(1)
-        except (openai.error.APIConnectionError, RequestsConnectionError) as e:
+        except (openai.APIConnectionError, RequestsConnectionError) as e:
             logging.error(f"Connection error: {e}")
             logging.error("Please check your internet connection and ensure required services are running.")
             sys.exit(1)
@@ -285,10 +286,10 @@ def handle_search(args):
                 if "collection_name" not in p.payload:
                     p.payload["collection_name"] = collection_name
 
-        except openai.error.AuthenticationError:
+        except openai.AuthenticationError:
             logging.error("Invalid OpenAI API key. Please check your OPENAI_API_KEY environment variable.")
             sys.exit(1)
-        except (openai.error.APIConnectionError, RequestsConnectionError) as e:
+        except (openai.APIConnectionError, RequestsConnectionError) as e:
             logging.error(f"Connection error: {e}")
             logging.error("Please check your internet connection and ensure required services are running.")
             sys.exit(1)

@@ -1,5 +1,6 @@
 import os
 import openai
+from openai import OpenAI
 from dotenv import load_dotenv
 
 def load_config():
@@ -9,7 +10,12 @@ def load_config():
     """
     load_dotenv()
 
+    # Set API key for backward compatibility with older code
     openai.api_key = os.getenv("OPENAI_API_KEY", "")
+    
+    # The OpenAI client will automatically use OPENAI_API_KEY environment variable
+    # So this is optional, but shown for clarity
+    # client = OpenAI(api_key=os.getenv("OPENAI_API_KEY", ""))
 
     return {
         "openai_embed_model": os.getenv("OPENAI_EMBED_MODEL", "text-embedding-ada-002"),

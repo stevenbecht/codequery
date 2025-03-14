@@ -3,6 +3,7 @@
 import sys
 import logging
 import openai
+from openai import OpenAI
 import time
 import os
 
@@ -120,9 +121,10 @@ def handle_chat(args):
     if args.list_models:
         logging.info("[Chat] Listing OpenAI models...\n")
         try:
-            model_data = openai.Model.list()
-            for m in model_data["data"]:
-                logging.info(m["id"])
+            client = OpenAI()
+            model_data = client.models.list()
+            for m in model_data.data:
+                logging.info(m.id)
         except Exception as e:
             logging.error(f"Error listing models: {e}")
         sys.exit(0)
@@ -182,7 +184,8 @@ def handle_chat(args):
         ]
         
         # Make the chat request
-        resp = openai.ChatCompletion.create(
+        client = OpenAI()
+        resp = client.chat.completions.create(
             model=model_name,
             messages=messages
         )
@@ -192,7 +195,7 @@ def handle_chat(args):
         total_time = end_time - start_time
         logging.info(f"\nTotal time: {total_time:.2f} seconds")
         logging.info("\n=== ChatGPT Answer ===")
-        logging.info(resp["choices"][0]["message"]["content"])
+        logging.info(resp.choices[0].message.content)
         return
 
     ################################################################

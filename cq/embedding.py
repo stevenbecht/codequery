@@ -239,6 +239,10 @@ def chunk_directory(
     Now also honors `.gitignore` if present in `directory`.
     """
     gitignore_spec = _load_gitignore_patterns(directory)
+    
+    # Log once that we're using gitignore
+    if gitignore_spec:
+        logging.info(f"[ChunkDir] Using .gitignore filters from {directory}")
 
     if not recursive:
         # Non-recursive
@@ -248,7 +252,7 @@ def chunk_directory(
             if gitignore_spec:
                 rel_path = os.path.relpath(file_path, directory)
                 if gitignore_spec.match_file(rel_path):
-                    logging.info(f"[ChunkDir] Skipping ignored file: {rel_path}")
+                    logging.debug(f"[ChunkDir] Skipping ignored file: {rel_path}")
                     continue
 
             ext = os.path.splitext(file_path)[1].lower()
@@ -257,7 +261,7 @@ def chunk_directory(
             elif ext in [".js", ".jsx", ".ts", ".tsx", ".php"]:
                 yield from chunk_file_generic(file_path, model=model, max_tokens=max_tokens)
             else:
-                logging.info(f"[ChunkDir] Skipping unrecognized file type: {file_path}")
+                logging.debug(f"[ChunkDir] Skipping unrecognized file type: {file_path}")
     else:
         # Recursive walk
         for root, dirs, files in os.walk(directory):
@@ -273,7 +277,7 @@ def chunk_directory(
                 rel_path = os.path.relpath(full_path, directory)
 
                 if gitignore_spec and gitignore_spec.match_file(rel_path):
-                    logging.info(f"[ChunkDir] Skipping ignored file: {rel_path}")
+                    logging.debug(f"[ChunkDir] Skipping ignored file: {rel_path}")
                     continue
 
                 ext = os.path.splitext(file_name)[1].lower()
@@ -282,7 +286,7 @@ def chunk_directory(
                 elif ext in [".js", ".jsx", ".ts", ".tsx", ".php"]:
                     yield from chunk_file_generic(full_path, model=model, max_tokens=max_tokens)
                 else:
-                    logging.info(f"[ChunkDir] Skipping unrecognized file type: {full_path}")
+                    logging.debug(f"[ChunkDir] Skipping unrecognized file type: {full_path}")
 
 def compute_snippet_hash(text: str) -> str:
     """Compute a hash (MD5) for the snippet text to detect changes."""

@@ -249,7 +249,7 @@ def handle_chat(args):
     start_time = time.time()
 
     # Perform the chat with context from the specified Qdrant collection
-    answer = chat_with_context(
+    result = chat_with_context(
         query=full_query,
         collection_name=collection_name,
         qdrant_client=client,
@@ -264,6 +264,12 @@ def handle_chat(args):
     end_time = time.time()
     total_time = end_time - start_time
 
+    # Display the list of files used in the context
+    if result['context_files']:
+        logging.info("\n=== Files Used in Context ===")
+        for file in result['context_files']:
+            logging.info(f"- {file}")
+
     logging.info(f"\nTotal time: {total_time:.2f} seconds")
     logging.info("\n=== ChatGPT Answer ===")
-    logging.info(answer)
+    logging.info(result['answer'])

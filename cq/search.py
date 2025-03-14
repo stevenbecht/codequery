@@ -105,6 +105,13 @@ def chat_with_context(
     query_tokens = count_tokens(query, embed_model)
     results = search_codebase_in_qdrant(query, collection_name, qdrant_client, embed_model, top_k, verbose)
     search_time = time.time() - search_start
+    
+    # Extract the list of files used in the context
+    context_files = []
+    for match in results['points']:
+        file_path = match.payload['file_path']
+        if file_path not in context_files:
+            context_files.append(file_path)
 
     if verbose:
         logging.debug("=== Qdrant Search Results for Chat (Verbose) ===")
@@ -165,7 +172,15 @@ def chat_with_context(
         logging.info(f"Chat tokens (prompt): {prompt_tokens:,} tokens")
         logging.info(f"Chat tokens (completion): {completion_tokens:,} tokens")
         logging.info(f"Chat tokens (total): {total_tokens:,} tokens")
-        return resp.choices[0].message.content
+        return {
+            'answer': resp.choices[0].message.content,
+            'context_files': context_files,
+            'prompt_tokens': prompt_tokens,
+            'completion_tokens': completion_tokens,
+            'total_tokens': total_tokens,
+            'search_time': search_time,
+            'chat_time': chat_time
+        }
     else:
         messages = [
             {"role": "system", "content": "You are a helpful coding assistant."},
@@ -197,4 +212,12 @@ def chat_with_context(
     logging.info(f"Chat tokens (completion): {completion_tokens:,} tokens")
     logging.info(f"Chat tokens (total): {total_tokens:,} tokens")
     
-    return resp.choices[0].message.content
+    return {
+        'answer': resp.choices[0].message.content,
+        'context_files': context_files,
+        'prompt_tokens': prompt_tokens,
+        'completion_tokens': completion_tokens,
+        'total_tokens': total_tokens,
+        'search_time': search_time,
+        'chat_time': chat_time
+    }

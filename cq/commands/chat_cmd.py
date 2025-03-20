@@ -323,12 +323,6 @@ def handle_chat(args):
     end_time = time.time()
     total_time = end_time - start_time
 
-    # Display the list of files used in the context
-    if result['context_files']:
-        logging.info("=== Files Used in Context ===")
-        for file in result['context_files']:
-            logging.info(f"- {file}")
-
     logging.info(f"Total time: {total_time:.2f} seconds")
     logging.info("=== Detailed Timing & Usage ===")
     logging.info(f"Input tokens: {result['prompt_tokens']:,} tokens")

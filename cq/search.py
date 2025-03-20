@@ -107,6 +107,8 @@ def build_context_snippets_limited(
 
     if truncated:
         logging.warning(f"[Context] Only included {included_snippets}/{total_snippets} snippets due to token limit.")
+        file_paths = set(match.payload['file_path'] for match in results)
+        logging.warning(f"[Context] Found {len(file_paths)} relevant files, but only showing content from {included_snippets} snippets.")
         logging.warning(f"[Context] Total tokens needed: {all_snippets_tokens}, token window: {max_context_tokens}")
         logging.warning("[Context] Use -w/--max-window with a higher value to include more context (e.g., -w 8000)")
 
@@ -136,6 +138,12 @@ def chat_with_context(
         file_path = match.payload['file_path']
         if file_path not in context_files:
             context_files.append(file_path)
+            
+    # Display the files found in search before building context
+    if context_files:
+        logging.info("=== Files Found in Search ===")
+        for file in context_files:
+            logging.info(f"- {file}")
 
     if verbose:
         logging.debug("=== Qdrant Search Results for Chat (Verbose) ===")
@@ -178,6 +186,8 @@ def chat_with_context(
         
         # Calculate and show input tokens
         prompt_tokens = sum(count_tokens(m["content"], chat_model) for m in messages)
+        
+        # Show context info AFTER files list but BEFORE API call
         logging.info(f"Input tokens: {prompt_tokens:,}")
         logging.info("Sending request to OpenAI API...")
         
@@ -263,6 +273,8 @@ def chat_with_context(
 
     # Calculate and show input tokens
     prompt_tokens = sum(count_tokens(m["content"], chat_model) for m in messages)
+    
+    # Show context info AFTER files list but BEFORE API call
     logging.info(f"Input tokens: {prompt_tokens:,}")
     logging.info("Sending request to OpenAI API...")
     

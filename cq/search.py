@@ -154,16 +154,15 @@ def chat_with_context(
         
         # Calculate and show input tokens
         prompt_tokens = sum(count_tokens(m["content"], chat_model) for m in messages)
-        sys.stdout.write(f"Input tokens: {prompt_tokens:,}\n")
-        sys.stdout.write("Sending request to OpenAI API...\n")
-        sys.stdout.flush()
+        logging.info(f"Input tokens: {prompt_tokens:,}")
+        logging.info("Sending request to OpenAI API...")
         
         # Setup progress indicator thread
         stop_progress = threading.Event()
         request_start = time.time()
         
+        # Thread function to show progress while waiting
         def show_progress():
-            wait_time = 0
             while not stop_progress.is_set():
                 elapsed = time.time() - request_start
                 sys.stdout.write(f"\rWaiting for response... [{elapsed:.1f}s]")
@@ -188,6 +187,8 @@ def chat_with_context(
             # Stop the progress indicator
             stop_progress.set()
             progress_thread.join()
+            
+            # Add a newline after our counter
             sys.stdout.write("\n")
             sys.stdout.flush()
             
@@ -195,6 +196,8 @@ def chat_with_context(
             # Stop the progress indicator
             stop_progress.set()
             progress_thread.join()
+            
+            # Add a newline after our counter
             sys.stdout.write("\n")
             sys.stdout.flush()
             raise e
@@ -236,16 +239,15 @@ def chat_with_context(
 
     # Calculate and show input tokens
     prompt_tokens = sum(count_tokens(m["content"], chat_model) for m in messages)
-    sys.stdout.write(f"Input tokens: {prompt_tokens:,}\n")
-    sys.stdout.write("Sending request to OpenAI API...\n")
-    sys.stdout.flush()
+    logging.info(f"Input tokens: {prompt_tokens:,}")
+    logging.info("Sending request to OpenAI API...")
     
     # Setup progress indicator thread
     stop_progress = threading.Event()
     request_start = time.time()
     
+    # Thread function to show progress while waiting
     def show_progress():
-        wait_time = 0
         while not stop_progress.is_set():
             elapsed = time.time() - request_start
             sys.stdout.write(f"\rWaiting for response... [{elapsed:.1f}s]")
@@ -266,6 +268,8 @@ def chat_with_context(
         # Stop the progress indicator
         stop_progress.set()
         progress_thread.join()
+        
+        # Add a newline after our counter
         sys.stdout.write("\n")
         sys.stdout.flush()
         
@@ -273,6 +277,8 @@ def chat_with_context(
         # Stop the progress indicator
         stop_progress.set()
         progress_thread.join()
+        
+        # Add a newline after our counter
         sys.stdout.write("\n")
         sys.stdout.flush()
         raise e

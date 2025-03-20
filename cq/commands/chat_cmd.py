@@ -155,7 +155,7 @@ def handle_chat(args):
     # If --no-context, do a direct chat with OpenAI, skipping Qdrant
     ################################################################
     if args.no_context:
-        logging.info(f"\n=== Using Model: {model_name} === (no context mode)\n")
+        logging.info(f"=== Using Model: {model_name} === (no context mode)")
         
         # If the user piped content via stdin
         stdin_content = ""
@@ -186,27 +186,23 @@ def handle_chat(args):
         ]
         
         # Provide feedback that we're counting tokens
-        sys.stdout.write("Counting input tokens... ")
-        sys.stdout.flush()
+        logging.info("Counting input tokens... ", extra={"end": ""})
         
         # Calculate input token count
         prompt_tokens = sum(count_tokens(m["content"], model_name) for m in messages)
         
         # Show token count immediately
-        sys.stdout.write(f"Done! ({prompt_tokens:,} tokens)\n")
-        sys.stdout.write("Sending request to OpenAI API...\n")
-        sys.stdout.flush()
+        logging.info(f"Done! ({prompt_tokens:,} tokens)")
+        logging.info("Sending request to OpenAI API...")
         
         # Setup for tracking API request time
         request_start = time.time()
-        last_update = request_start
         
         # Create a flag to control the progress indicator thread
         stop_progress = threading.Event()
         
         # Thread function to show progress while waiting
         def show_progress():
-            wait_time = 0
             while not stop_progress.is_set():
                 elapsed = time.time() - request_start
                 sys.stdout.write(f"\rWaiting for response... [{elapsed:.1f}s]")
@@ -253,12 +249,12 @@ def handle_chat(args):
 
         # Log timing / usage
         total_time = end_time - start_time
-        logging.info(f"\nTotal time: {total_time:.2f} seconds")
-        logging.info("\n=== Detailed Timing & Usage ===")
+        logging.info(f"Total time: {total_time:.2f} seconds")
+        logging.info("=== Detailed Timing & Usage ===")
         logging.info(f"Input tokens: {prompt_tokens:,} tokens")
         logging.info(f"Output tokens: {completion_tokens:,} tokens")
         logging.info(f"Total tokens: {total_tokens:,} tokens")
-        logging.info("\n=== ChatGPT Answer ===")
+        logging.info("=== ChatGPT Answer ===")
         logging.info(resp.choices[0].message.content)
         return
 
@@ -289,10 +285,9 @@ def handle_chat(args):
         logging.info(f"Try running: cq embed -c {collection_name} [--recreate] to create it first.")
         return  # Gracefully exit
 
-    logging.info(f"\n=== Using Model: {model_name} ===")
+    logging.info(f"=== Using Model: {model_name} ===")
     if model_name.startswith('o3-'):
         logging.info(f"Reasoning Effort: {args.reasoning_effort}")
-    logging.info("")
 
     # If the user piped content via stdin
     stdin_content = ""
@@ -330,14 +325,14 @@ def handle_chat(args):
 
     # Display the list of files used in the context
     if result['context_files']:
-        logging.info("\n=== Files Used in Context ===")
+        logging.info("=== Files Used in Context ===")
         for file in result['context_files']:
             logging.info(f"- {file}")
 
-    logging.info(f"\nTotal time: {total_time:.2f} seconds")
-    logging.info("\n=== Detailed Timing & Usage ===")
+    logging.info(f"Total time: {total_time:.2f} seconds")
+    logging.info("=== Detailed Timing & Usage ===")
     logging.info(f"Input tokens: {result['prompt_tokens']:,} tokens")
     logging.info(f"Output tokens: {result['completion_tokens']:,} tokens")
     logging.info(f"Total tokens: {result['total_tokens']:,} tokens")
-    logging.info("\n=== ChatGPT Answer ===")
+    logging.info("=== ChatGPT Answer ===")
     logging.info(result['answer'])

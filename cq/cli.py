@@ -29,7 +29,22 @@ def setup_logging(verbose: bool):
 
     # 3) Create a single stream handler with your desired format
     handler = logging.StreamHandler(sys.stdout)
-    handler.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
+    
+    # Create a custom formatter that supports the 'end' parameter
+    class CustomFormatter(logging.Formatter):
+        def format(self, record):
+            # Get the standard formatted message
+            message = super().format(record)
+            
+            # Check if the record has an 'end' attribute
+            if hasattr(record, 'end'):
+                # If end is empty, remove the newline
+                if record.end == "":
+                    return message.rstrip('\n')
+            
+            return message
+    
+    handler.setFormatter(CustomFormatter("%(levelname)s: %(message)s"))
     handler.setLevel(level)
 
     # 4) If not verbose, attach a filter that hides lines containing "HTTP Request:"

@@ -6,9 +6,11 @@ import openai
 from openai import OpenAI
 import time
 import os
+import threading
 
 from cq.config import load_config
 from cq.search import chat_with_context
+from cq.embedding import count_tokens
 from .util import get_qdrant_client
 
 def register_subparser(subparsers):
@@ -183,17 +185,79 @@ def handle_chat(args):
             {"role": "user", "content": full_query}
         ]
         
-        # Make the chat request
+        # Provide feedback that we're counting tokens
+        sys.stdout.write("Counting input tokens... ")
+        sys.stdout.flush()
+        
+        # Calculate input token count
+        prompt_tokens = sum(count_tokens(m["content"], model_name) for m in messages)
+        
+        # Show token count immediately
+        sys.stdout.write(f"Done! ({prompt_tokens:,} tokens)\n")
+        sys.stdout.write("Sending request to OpenAI API...\n")
+        sys.stdout.flush()
+        
+        # Setup for tracking API request time
+        request_start = time.time()
+        last_update = request_start
+        
+        # Create a flag to control the progress indicator thread
+        stop_progress = threading.Event()
+        
+        # Thread function to show progress while waiting
+        def show_progress():
+            wait_time = 0
+            while not stop_progress.is_set():
+                elapsed = time.time() - request_start
+                sys.stdout.write(f"\rWaiting for response... [{elapsed:.1f}s]")
+                sys.stdout.flush()
+                time.sleep(1.0)
+        
+        # Start the progress thread
+        progress_thread = threading.Thread(target=show_progress)
+        progress_thread.daemon = True
+        progress_thread.start()
+        
+        # Make the chat request with progress updates
         client = OpenAI()
-        resp = client.chat.completions.create(
-            model=model_name,
-            messages=messages
-        )
+        try:
+            # Make the actual API call
+            resp = client.chat.completions.create(
+                model=model_name,
+                messages=messages
+            )
+            
+            # Stop the progress indicator
+            stop_progress.set()
+            progress_thread.join()
+            
+            # Add a newline after our counter
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+            
+        except Exception as e:
+            # Stop the progress indicator
+            stop_progress.set()
+            progress_thread.join()
+            
+            # Make sure to add a newline if there was an error
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+            raise e
+        
         end_time = time.time()
+        
+        # Calculate output token count
+        completion_tokens = count_tokens(resp.choices[0].message.content, model_name)
+        total_tokens = prompt_tokens + completion_tokens
 
         # Log timing / usage
         total_time = end_time - start_time
         logging.info(f"\nTotal time: {total_time:.2f} seconds")
+        logging.info("\n=== Detailed Timing & Usage ===")
+        logging.info(f"Input tokens: {prompt_tokens:,} tokens")
+        logging.info(f"Output tokens: {completion_tokens:,} tokens")
+        logging.info(f"Total tokens: {total_tokens:,} tokens")
         logging.info("\n=== ChatGPT Answer ===")
         logging.info(resp.choices[0].message.content)
         return
@@ -271,5 +335,9 @@ def handle_chat(args):
             logging.info(f"- {file}")
 
     logging.info(f"\nTotal time: {total_time:.2f} seconds")
+    logging.info("\n=== Detailed Timing & Usage ===")
+    logging.info(f"Input tokens: {result['prompt_tokens']:,} tokens")
+    logging.info(f"Output tokens: {result['completion_tokens']:,} tokens")
+    logging.info(f"Total tokens: {result['total_tokens']:,} tokens")
     logging.info("\n=== ChatGPT Answer ===")
     logging.info(result['answer'])

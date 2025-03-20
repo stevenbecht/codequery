@@ -2,6 +2,9 @@ import logging
 import openai
 from openai import OpenAI
 from qdrant_client import QdrantClient
+import time
+import sys
+import threading
 
 from .embedding import count_tokens
 
@@ -97,9 +100,6 @@ def chat_with_context(
     reasoning_effort: str = "medium"
 ):
     """Search, build context, and send to OpenAI ChatCompletion."""
-    import time
-    from .embedding import count_tokens
-    
     # Time the search operation
     search_start = time.time()
     query_tokens = count_tokens(query, embed_model)
@@ -151,17 +151,57 @@ def chat_with_context(
             {"role": "system", "content": "You are a helpful coding assistant."},
             {"role": "user", "content": f"Relevant code:\n{context_text}\n\nUser query: {query}"}
         ]
-        # Add reasoning_effort parameter for o3-mini model
-        client = OpenAI()
-        resp = client.chat.completions.create(
-            model=chat_model,
-            messages=messages,
-            reasoning_effort=reasoning_effort
-        )
+        
+        # Calculate and show input tokens
+        prompt_tokens = sum(count_tokens(m["content"], chat_model) for m in messages)
+        sys.stdout.write(f"Input tokens: {prompt_tokens:,}\n")
+        sys.stdout.write("Sending request to OpenAI API...\n")
+        sys.stdout.flush()
+        
+        # Setup progress indicator thread
+        stop_progress = threading.Event()
+        request_start = time.time()
+        
+        def show_progress():
+            wait_time = 0
+            while not stop_progress.is_set():
+                elapsed = time.time() - request_start
+                sys.stdout.write(f"\rWaiting for response... [{elapsed:.1f}s]")
+                sys.stdout.flush()
+                time.sleep(1.0)
+        
+        # Start progress thread
+        progress_thread = threading.Thread(target=show_progress)
+        progress_thread.daemon = True
+        progress_thread.start()
+        
+        # Make the API call
+        try:
+            # Add reasoning_effort parameter for o3-mini model
+            client = OpenAI()
+            resp = client.chat.completions.create(
+                model=chat_model,
+                messages=messages,
+                reasoning_effort=reasoning_effort
+            )
+            
+            # Stop the progress indicator
+            stop_progress.set()
+            progress_thread.join()
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+            
+        except Exception as e:
+            # Stop the progress indicator
+            stop_progress.set()
+            progress_thread.join()
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+            raise e
+            
         chat_time = time.time() - chat_start
         
         # Calculate token usage
-        prompt_tokens = sum(count_tokens(m["content"], chat_model) for m in messages)
         completion_tokens = count_tokens(resp.choices[0].message.content, chat_model)
         total_tokens = prompt_tokens + completion_tokens
         
@@ -194,13 +234,52 @@ def chat_with_context(
             logging.debug(msg['content'])
             logging.debug("---")
 
-    # Standard call for non-o3-mini models
-    client = OpenAI()
-    resp = client.chat.completions.create(model=chat_model, messages=messages)
+    # Calculate and show input tokens
+    prompt_tokens = sum(count_tokens(m["content"], chat_model) for m in messages)
+    sys.stdout.write(f"Input tokens: {prompt_tokens:,}\n")
+    sys.stdout.write("Sending request to OpenAI API...\n")
+    sys.stdout.flush()
+    
+    # Setup progress indicator thread
+    stop_progress = threading.Event()
+    request_start = time.time()
+    
+    def show_progress():
+        wait_time = 0
+        while not stop_progress.is_set():
+            elapsed = time.time() - request_start
+            sys.stdout.write(f"\rWaiting for response... [{elapsed:.1f}s]")
+            sys.stdout.flush()
+            time.sleep(1.0)
+    
+    # Start progress thread
+    progress_thread = threading.Thread(target=show_progress)
+    progress_thread.daemon = True
+    progress_thread.start()
+    
+    # Make the API call
+    try:
+        # Standard call for non-o3-mini models
+        client = OpenAI()
+        resp = client.chat.completions.create(model=chat_model, messages=messages)
+        
+        # Stop the progress indicator
+        stop_progress.set()
+        progress_thread.join()
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+        
+    except Exception as e:
+        # Stop the progress indicator
+        stop_progress.set()
+        progress_thread.join()
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+        raise e
+        
     chat_time = time.time() - chat_start
     
     # Calculate token usage
-    prompt_tokens = sum(count_tokens(m["content"], chat_model) for m in messages)
     completion_tokens = count_tokens(resp.choices[0].message.content, chat_model)
     total_tokens = prompt_tokens + completion_tokens
     

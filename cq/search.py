@@ -72,6 +72,23 @@ def build_context_snippets_limited(
     if budget < 0:
         budget = 0
 
+    truncated = False
+    total_snippets = len(results)
+    included_snippets = 0
+    
+    # First, calculate tokens for all snippets
+    all_snippets_tokens = 0
+    for match in results:
+        pl = match.payload
+        snippet_text = (
+            f"File: {pl['file_path']}, Function: {pl['function_name']} "
+            f"(lines {pl['start_line']}-{pl['end_line']}):\n"
+            f"{pl['code']}\n"
+        )
+        snippet_tokens = count_tokens(snippet_text, model)
+        all_snippets_tokens += snippet_tokens
+    
+    # Now build the context that fits within the budget
     for match in results:
         pl = match.payload
         snippet_text = (
@@ -82,9 +99,16 @@ def build_context_snippets_limited(
         snippet_tokens = count_tokens(snippet_text, model)
 
         if total + snippet_tokens > budget:
+            truncated = True
             break
         segments.append(snippet_text)
         total += snippet_tokens
+        included_snippets += 1
+
+    if truncated:
+        logging.warning(f"[Context] Only included {included_snippets}/{total_snippets} snippets due to token limit.")
+        logging.warning(f"[Context] Total tokens needed: {all_snippets_tokens}, token window: {max_context_tokens}")
+        logging.warning("[Context] Use -w/--max-window with a higher value to include more context (e.g., -w 8000)")
 
     return "\n---\n".join(segments)
 

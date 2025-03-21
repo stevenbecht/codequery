@@ -172,7 +172,7 @@ def is_excluded_file(file_path):
 def get_display_path(file_path):
     """
     Calculate the relative path from the current directory for display purposes.
-    Prefix files in the current directory with './'
+    Prefix all relative paths with './' for consistency
     """
     # Make sure we use the absolute path first to handle different path formats
     abs_path = os.path.abspath(file_path)
@@ -185,9 +185,12 @@ def get_display_path(file_path):
         # Otherwise, get the relative path from the current directory
         display_path = os.path.relpath(abs_path, current_dir)
         
-        # Add './' prefix for files in the current directory (not in subdirectories)
-        if '/' not in display_path and '\\' not in display_path:
-            display_path = './' + display_path
+        # Add './' prefix for all relative paths for consistency
+        # But avoid adding ./. for current directory
+        if display_path != ".":
+            # Don't add ./ if it already starts with ./
+            if not display_path.startswith('./'):
+                display_path = './' + display_path
     
     # Ensure forward slashes for consistency across platforms
     return display_path.replace(os.sep, '/')

@@ -5,6 +5,9 @@ import glob
 from pathlib import Path
 import pathspec
 
+# Import token counting functionality
+from cq.embedding import count_tokens
+
 def register_subparser(subparsers):
     """
     Register the 'dump' subcommand and its arguments.
@@ -25,6 +28,16 @@ def register_subparser(subparsers):
         "-v", "--verbose", 
         action="store_true",
         help="Verbose output"
+    )
+    dump_parser.add_argument(
+        "-c", "--count-tokens",
+        action="store_true",
+        help="Count tokens in each file and show total"
+    )
+    dump_parser.add_argument(
+        "-l", "--list-tokens",
+        action="store_true",
+        help="When used with -c, list token count for each file"
     )
     dump_parser.add_argument(
         "--include-binary",
@@ -156,23 +169,24 @@ def is_excluded_file(file_path):
     parts = Path(file_path).parts
     return "__pycache__" in parts or ".git" in parts
 
-def dump_file(file_path, include_binary=False):
+def dump_file(file_path, include_binary=False, count_tokens_flag=False, list_tokens_flag=False, print_content=True):
     """
     Dump the contents of a file in the BEGIN/END format.
+    Returns token count if count_tokens_flag is True, otherwise returns 0.
     """
     if not os.path.isfile(file_path):
         logging.warning(f"[Dump] Not a file: {file_path}")
-        return
+        return 0
     
     if is_excluded_file(file_path):
         if logging.getLogger().level <= logging.DEBUG:
             logging.debug(f"[Dump] Skipping excluded file: {file_path}")
-        return
+        return 0
     
     if not include_binary and is_binary_file(file_path):
         if logging.getLogger().level <= logging.DEBUG:
             logging.debug(f"[Dump] Skipping binary file: {file_path}")
-        return
+        return 0
     
     try:
         with open(file_path, "r", encoding="utf-8") as f:
@@ -182,10 +196,10 @@ def dump_file(file_path, include_binary=False):
             logging.warning(f"[Dump] Unable to read {file_path} as UTF-8 text, even though --include-binary was set.")
         else:
             logging.debug(f"[Dump] Skipping binary file: {file_path}")
-        return
+        return 0
     except Exception as e:
         logging.warning(f"[Dump] Error reading {file_path}: {e}")
-        return
+        return 0
     
     # Calculate the relative path from the current directory
     # Make sure we use the absolute path first to handle different path formats
@@ -206,9 +220,22 @@ def dump_file(file_path, include_binary=False):
     # Ensure forward slashes for consistency across platforms
     display_path = display_path.replace(os.sep, '/')
     
-    print(f"\nBEGIN: {display_path}")
-    print(content, end="" if content.endswith("\n") else "\n")
-    print(f"END: {display_path}")
+    # Count tokens if requested
+    token_count = 0
+    if count_tokens_flag:
+        token_count = count_tokens(content)
+        
+        # If both count and list flags are set, print token count for this file
+        if list_tokens_flag:
+            logging.info(f"Tokens: {token_count:,} | File: {display_path}")
+    
+    # Print file content only if requested
+    if print_content:
+        print(f"\nBEGIN: {display_path}")
+        print(content, end="" if content.endswith("\n") else "\n")
+        print(f"END: {display_path}")
+    
+    return token_count
 
 def handle_dump(args):
     """
@@ -250,6 +277,30 @@ def handle_dump(args):
     # Sort files for consistent output
     filtered_files.sort()
     
-    # Dump each file
+    # Determine if we should print file contents
+    # If -v is specified, always print content regardless of other flags
+    # Otherwise, don't print content if -c is specified
+    print_content = args.verbose or not args.count_tokens
+    
+    # For token counting with file listing, print a header
+    if args.count_tokens and args.list_tokens:
+        logging.info("=== Token Count Per File ===")
+    
+    # Dump each file and accumulate token counts if requested
+    total_tokens = 0
     for file in filtered_files:
-        dump_file(file, args.include_binary) 
+        file_tokens = dump_file(
+            file, 
+            args.include_binary, 
+            args.count_tokens, 
+            args.list_tokens,
+            print_content
+        )
+        total_tokens += file_tokens
+    
+    # Print total token count if counting was enabled
+    if args.count_tokens:
+        if args.list_tokens:
+            logging.info(f"=== Total Tokens: {total_tokens:,} ===")
+        else:
+            logging.info(f"Total Tokens: {total_tokens:,}") 

@@ -11,6 +11,7 @@ from cq.commands import chat_cmd
 from cq.commands import stats_cmd
 from cq.commands import diff_cmd
 from cq.commands import db_cmd
+from cq.commands import dump_cmd
 
 def setup_logging(verbose: bool):
     """
@@ -74,6 +75,7 @@ def main():
     stats_cmd.register_subparser(subparsers)
     diff_cmd.register_subparser(subparsers)
     db_cmd.register_subparser(subparsers)
+    dump_cmd.register_subparser(subparsers)
 
     # Parse CLI args, set up logging, and dispatch:
     args = parser.parse_args()

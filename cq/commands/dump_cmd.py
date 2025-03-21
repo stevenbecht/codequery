@@ -3,6 +3,7 @@ import logging
 import argparse
 import glob
 from pathlib import Path
+import pathspec
 
 def register_subparser(subparsers):
     """
@@ -30,10 +31,37 @@ def register_subparser(subparsers):
         action="store_true",
         help="Include binary files (default: skip binary files)"
     )
+    dump_parser.add_argument(
+        "--ignore-gitignore",
+        action="store_true",
+        help="Ignore .gitignore patterns (default: respect .gitignore)"
+    )
     
     dump_parser.set_defaults(func=handle_dump)
 
-def get_files_from_path(path, recursive=False):
+def get_gitignore_spec():
+    """
+    Parse .gitignore file and return a pathspec object to match paths.
+    Returns None if no .gitignore file exists or it cannot be read.
+    """
+    gitignore_path = os.path.join(os.getcwd(), '.gitignore')
+    
+    if not os.path.isfile(gitignore_path):
+        return None
+    
+    try:
+        with open(gitignore_path, 'r') as f:
+            gitignore_content = f.read()
+        
+        return pathspec.PathSpec.from_lines(
+            pathspec.patterns.GitWildMatchPattern, 
+            gitignore_content.splitlines()
+        )
+    except Exception as e:
+        logging.warning(f"[Dump] Error reading .gitignore: {e}")
+        return None
+
+def get_files_from_path(path, recursive=False, gitignore_spec=None):
     """
     Get all files from a path. If path is a directory and recursive is True,
     recursively get all files from subdirectories.
@@ -47,28 +75,64 @@ def get_files_from_path(path, recursive=False):
     # Handle directory paths
     if path.is_dir():
         if recursive:
-            return [str(p) for p in path.glob('**/*') if p.is_file()]
+            all_files = [str(p) for p in path.glob('**/*') if p.is_file()]
         else:
-            return [str(p) for p in path.glob('*') if p.is_file()]
+            all_files = [str(p) for p in path.glob('*') if p.is_file()]
+            
+        # Filter out files that match .gitignore patterns
+        if gitignore_spec:
+            base_dir = os.path.abspath(path)
+            filtered_files = []
+            for file_path in all_files:
+                # Get the relative path from the base directory
+                rel_path = os.path.relpath(file_path, base_dir)
+                if not gitignore_spec.match_file(rel_path):
+                    filtered_files.append(file_path)
+            return filtered_files
+        else:
+            return all_files
     
     # Handle glob patterns
     if '*' in str(path):
         if recursive:
-            # If the pattern is a simple wildcard like *.py, and recursive is True,
-            # we want to find all matching files in all subdirectories
-            if str(path).startswith('*') or '/' not in str(path):
-                # Create a pattern that matches in all subdirectories
-                base_dir = '.'
-                pattern = str(path)
-                # Use **/ pattern for recursive glob
-                recursive_pattern = os.path.join('**', pattern)
-                return glob.glob(recursive_pattern, recursive=True)
+            # For simple patterns like "*.ts" or extension-based patterns
+            path_str = str(path)
+            if path_str.startswith('*') or '/' not in path_str:
+                # First, find files in the current directory matching the pattern
+                files = glob.glob(path_str)
+                
+                # Then, search recursively in all subdirectories
+                # We need to scan all directories and find matching files
+                for root, dirs, _ in os.walk('.'):
+                    for dir_name in dirs:
+                        dir_path = os.path.join(root, dir_name)
+                        # Apply the pattern in each subdirectory
+                        subdir_matches = glob.glob(os.path.join(dir_path, path_str))
+                        files.extend(subdir_matches)
+                
+                # Filter out files that match .gitignore patterns
+                if gitignore_spec:
+                    files = [f for f in files if not gitignore_spec.match_file(f)]
+                
+                return files
             else:
                 # For patterns with directories, use as is with recursive=True
-                return glob.glob(str(path), recursive=True)
+                files = glob.glob(str(path), recursive=True)
+                
+                # Filter out files that match .gitignore patterns
+                if gitignore_spec:
+                    files = [f for f in files if not gitignore_spec.match_file(f)]
+                
+                return files
         else:
             # Non-recursive glob
-            return glob.glob(str(path))
+            files = glob.glob(str(path))
+            
+            # Filter out files that match .gitignore patterns
+            if gitignore_spec:
+                files = [f for f in files if not gitignore_spec.match_file(f)]
+            
+            return files
     
     # If we get here, the path wasn't found
     logging.warning(f"[Dump] No files found matching: {path}")
@@ -123,22 +187,47 @@ def dump_file(file_path, include_binary=False):
         logging.warning(f"[Dump] Error reading {file_path}: {e}")
         return
     
-    # Use relative path for output if possible
-    rel_path = os.path.relpath(file_path)
+    # Calculate the relative path from the current directory
+    # Make sure we use the absolute path first to handle different path formats
+    abs_path = os.path.abspath(file_path)
+    current_dir = os.path.abspath(os.getcwd())
     
-    print(f"\nBEGIN: {rel_path}")
+    # If the file is outside the current directory, use the full path
+    if os.path.commonpath([current_dir, abs_path]) != current_dir:
+        display_path = file_path
+    else:
+        # Otherwise, get the relative path from the current directory
+        display_path = os.path.relpath(abs_path, current_dir)
+        
+        # Add './' prefix for files in the current directory (not in subdirectories)
+        if '/' not in display_path and '\\' not in display_path:
+            display_path = './' + display_path
+    
+    # Ensure forward slashes for consistency across platforms
+    display_path = display_path.replace(os.sep, '/')
+    
+    print(f"\nBEGIN: {display_path}")
     print(content, end="" if content.endswith("\n") else "\n")
-    print(f"END: {rel_path}")
+    print(f"END: {display_path}")
 
 def handle_dump(args):
     """
     Handle the dump subcommand.
     """
+    # Parse .gitignore if it exists and we're not ignoring it
+    gitignore_spec = None
+    if not args.ignore_gitignore:
+        gitignore_spec = get_gitignore_spec()
+        if gitignore_spec and args.verbose:
+            logging.info("[Dump] Using .gitignore patterns to filter files")
+    
     # Process each path argument
     all_files = []
     
     for path in args.paths:
-        files = get_files_from_path(path, args.recursive)
+        files = get_files_from_path(path, args.recursive, gitignore_spec)
+        if args.verbose and files:
+            logging.info(f"[Dump] Found {len(files)} files matching: {path}")
         all_files.extend(files)
     
     if not all_files:

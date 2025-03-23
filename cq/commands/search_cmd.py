@@ -410,10 +410,13 @@ The structure is:
 
         # Otherwise, plain text listing
         file_count = len(sorted_files)
+        # Calculate total chunks
+        total_chunks = sum(info["chunks"] for _, info in sorted_files)
+        
         if file_count < total_matching_files:
-            logging.info(f"=== Matching Files (showing {file_count} of {total_matching_files}) (threshold: {args.threshold:.2f}) ===")
+            logging.info(f"=== Found {total_chunks} chunks in {file_count} files (threshold: {args.threshold:.2f}) ===")
         else:
-            logging.info(f"=== Matching Files ({file_count}) (threshold: {args.threshold:.2f}) ===")
+            logging.info(f"=== Found {total_chunks} chunks in {file_count} files (threshold: {args.threshold:.2f}) ===")
 
         # Figure out alignment for tokens
         max_token_digits = 0
@@ -432,7 +435,7 @@ The structure is:
                 f"Score: {info['score']:.3f} | Tokens: {tokens_formatted} | Stale: {stale_col} | File: {file_path}{chunk_info}"
             )
 
-        logging.info(f"=== Total tokens (across {file_count} matched files): {total_tokens_across_files} ===")
+        logging.info(f"=== Total tokens: {total_tokens_across_files} from {total_chunks} chunks of {file_count} files ===")
         
         # If showing limited results, remind user of total matches
         if file_count < total_matching_files:

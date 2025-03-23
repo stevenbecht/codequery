@@ -189,7 +189,7 @@ def handle_search(args):
         num_results = 1000
     elif args.all:
         num_results = 1000
-    elif args.list:
+    elif args.list and not args.num_results:  # Only use 25 if user didn't specify -n
         num_results = 25
     else:
         num_results = args.num_results
@@ -343,6 +343,13 @@ def handle_search(args):
 
         # Sort by best score
         sorted_files = sorted(file_data.items(), key=lambda x: x[1]["score"], reverse=True)
+        
+        # Limit number of files based on -n parameter, unless --all is specified
+        if not args.all and args.num_results > 0:
+            original_count = len(sorted_files)
+            sorted_files = sorted_files[:args.num_results]
+            if len(sorted_files) < original_count:
+                logging.debug(f"[Search][List] Limited output from {original_count} to {args.num_results} files due to -n parameter")
 
         # If user wants XML + dump entire files
         if args.xml_output and args.dump:

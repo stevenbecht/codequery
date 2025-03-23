@@ -323,13 +323,15 @@ def handle_search(args):
                 file_data[file_path] = {
                     "score": score,
                     "tokens": chunk_tokens,
-                    "stale": False
+                    "stale": False,
+                    "chunks": 1  # Track number of chunks per file
                 }
             else:
                 # Update best score if higher
                 if score > file_data[file_path]["score"]:
                     file_data[file_path]["score"] = score
                 file_data[file_path]["tokens"] += chunk_tokens
+                file_data[file_path]["chunks"] += 1  # Increment chunk count
 
             # Check stale
             try:
@@ -425,8 +427,9 @@ The structure is:
             total_tokens_across_files += info["tokens"]
             tokens_formatted = f"{info['tokens']:>{max_token_digits}}"
             stale_col = "Y" if info["stale"] else "N"
+            chunk_info = f" ({info['chunks']} chunks)" if info['chunks'] > 1 else ""
             logging.info(
-                f"Score: {info['score']:.3f} | Tokens: {tokens_formatted} | Stale: {stale_col} | File: {file_path}"
+                f"Score: {info['score']:.3f} | Tokens: {tokens_formatted} | Stale: {stale_col} | File: {file_path}{chunk_info}"
             )
 
         logging.info(f"=== Total tokens (across {file_count} matched files): {total_tokens_across_files} ===")

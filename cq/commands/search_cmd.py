@@ -334,7 +334,8 @@ def handle_search(args):
             # Check stale
             try:
                 disk_mod = os.path.getmtime(file_path)
-                if disk_mod > db_file_mod:
+                # Use a small tolerance (0.001 seconds) to avoid floating point precision issues
+                if disk_mod - db_file_mod > 0.001:  
                     file_data[file_path]["stale"] = True
             except Exception:
                 # Ignore if we can't stat the file
@@ -619,7 +620,8 @@ Now here's the raw XML of matched code snippets:
             file_path = match.payload.get("file_path", "")
             if file_path and os.path.exists(file_path):
                 disk_mod_time = os.path.getmtime(file_path)
-                if disk_mod_time > db_file_mod_time:
+                # Use a small tolerance (0.001 seconds) to avoid floating point precision issues
+                if disk_mod_time - db_file_mod_time > 0.001:
                     stale_snippets_found = True
                     break
         except Exception:

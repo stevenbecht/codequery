@@ -344,6 +344,9 @@ def handle_search(args):
         # Sort by best score
         sorted_files = sorted(file_data.items(), key=lambda x: x[1]["score"], reverse=True)
         
+        # Get total count before limiting
+        total_matching_files = len(sorted_files)
+        
         # Limit number of files based on -n parameter, unless --all is specified
         if not args.all and args.num_results > 0:
             original_count = len(sorted_files)
@@ -404,7 +407,11 @@ The structure is:
             return
 
         # Otherwise, plain text listing
-        logging.info(f"=== Matching Files (threshold: {args.threshold:.2f}) ===")
+        file_count = len(sorted_files)
+        if file_count < total_matching_files:
+            logging.info(f"=== Matching Files (showing {file_count} of {total_matching_files}) (threshold: {args.threshold:.2f}) ===")
+        else:
+            logging.info(f"=== Matching Files ({file_count}) (threshold: {args.threshold:.2f}) ===")
 
         # Figure out alignment for tokens
         max_token_digits = 0
@@ -422,7 +429,11 @@ The structure is:
                 f"Score: {info['score']:.3f} | Tokens: {tokens_formatted} | Stale: {stale_col} | File: {file_path}"
             )
 
-        logging.info(f"=== Total tokens (across all matched files): {total_tokens_across_files} ===")
+        logging.info(f"=== Total tokens (across {file_count} matched files): {total_tokens_across_files} ===")
+        
+        # If showing limited results, remind user of total matches
+        if file_count < total_matching_files:
+            logging.info(f"=== Showing {file_count} of {total_matching_files} total matching files (use --all to show all) ===")
         
         # If any file is stale, show the warning message
         if any(info["stale"] for _, info in sorted_files):

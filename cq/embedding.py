@@ -235,7 +235,7 @@ def chunk_directory(
 ):
     """
     Traverse the directory (optionally recursive) and yield code chunks
-    from .py, .js, .ts, .php files. Python uses AST-based chunking;
+    from .py, .js, .ts, .php, .go files. Python uses AST-based chunking;
     other supported languages use naive line-based chunking.
 
     Now also honors `.gitignore` if present in `directory`.
@@ -260,7 +260,7 @@ def chunk_directory(
             ext = os.path.splitext(file_path)[1].lower()
             if ext == ".py":
                 yield from chunk_file_python(file_path, model=model, max_tokens=max_tokens)
-            elif ext in [".js", ".jsx", ".ts", ".tsx", ".php"]:
+            elif ext in [".js", ".jsx", ".ts", ".tsx", ".php", ".go"]:
                 yield from chunk_file_generic(file_path, model=model, max_tokens=max_tokens)
             else:
                 logging.debug(f"[ChunkDir] Skipping unrecognized file type: {file_path}")
@@ -285,7 +285,7 @@ def chunk_directory(
                 ext = os.path.splitext(file_name)[1].lower()
                 if ext == ".py":
                     yield from chunk_file_python(full_path, model=model, max_tokens=max_tokens)
-                elif ext in [".js", ".jsx", ".ts", ".tsx", ".php"]:
+                elif ext in [".js", ".jsx", ".ts", ".tsx", ".php", ".go"]:
                     yield from chunk_file_generic(full_path, model=model, max_tokens=max_tokens)
                 else:
                     logging.debug(f"[ChunkDir] Skipping unrecognized file type: {full_path}")

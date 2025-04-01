@@ -32,7 +32,7 @@ def register_subparser(subparsers):
     )
     embed_parser.add_argument(
         "-r", "--recursive", action="store_true",
-        help="Recursively embed .py and other recognized files in subdirectories."
+        help="Recursively embed .py, .go and other recognized files in subdirectories."
     )
     embed_parser.add_argument(
         "-c", "--collection", type=str, default=None,

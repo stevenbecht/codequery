@@ -95,6 +95,7 @@ def guess_language_from_extension(file_path: str) -> str:
         ".ini": "ini",
         ".yaml": "yaml",
         ".yml": "yaml",
+        ".go": "go",
     }
     return ext_map.get(ext, "plaintext")
 

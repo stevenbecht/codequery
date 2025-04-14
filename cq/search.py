@@ -8,6 +8,32 @@ import threading
 
 from .embedding import count_tokens
 
+def get_model_token_limit(model_name):
+    """
+    Get the token limit for various OpenAI models.
+    Returns the token limit for the given model or a default.
+    """
+    model_token_limits = {
+        # Embedding models
+        "text-embedding-ada-002": 8191,
+        "text-embedding-3-small": 8191,
+        "text-embedding-3-large": 8191,
+        
+        # Chat models
+        "gpt-3.5-turbo": 4096,
+        "gpt-3.5-turbo-16k": 16384,
+        "gpt-4": 8192,
+        "gpt-4-32k": 32768,
+        "gpt-4o": 128000,
+        "gpt-4-turbo": 128000,
+        "gpt-4-1106-preview": 128000,
+        "gpt-4-0125-preview": 128000,
+        "gpt-4-1106-vision-preview": 128000,
+        "gpt-4-vision-preview": 128000,
+        "gpt-4.1": 128000
+    }
+    return model_token_limits.get(model_name, 8000)  # Default to 8000 if model is unknown
+
 def search_codebase_in_qdrant(
     query: str,
     collection_name: str,
@@ -19,6 +45,17 @@ def search_codebase_in_qdrant(
     """Embed `query`, search Qdrant for top_k results."""
     # Get query embedding and count tokens
     query_tokens = count_tokens(query, embed_model)
+    
+    # Check model token limits
+    token_limit = get_model_token_limit(embed_model)
+    
+    if query_tokens > token_limit:
+        raise ValueError(
+            f"Query exceeds the token limit for model {embed_model}. "
+            f"Token count: {query_tokens}, limit: {token_limit}. "
+            f"Try reducing the amount of code or using a smaller context."
+        )
+        
     client = OpenAI()
     query_emb = client.embeddings.create(model=embed_model, input=query).data[0].embedding
     
@@ -129,7 +166,25 @@ def chat_with_context(
     # Time the search operation
     search_start = time.time()
     query_tokens = count_tokens(query, embed_model)
-    results = search_codebase_in_qdrant(query, collection_name, qdrant_client, embed_model, top_k, verbose)
+    
+    try:
+        results = search_codebase_in_qdrant(query, collection_name, qdrant_client, embed_model, top_k, verbose)
+    except ValueError as e:
+        if "exceeds the token limit" in str(e):
+            logging.error(f"Token limit exceeded: {e}")
+            logging.error(f"Your code context is too large ({query_tokens} tokens).")
+            logging.error("Suggestions:")
+            logging.error("1. Use -n/--no-context flag to chat without code context")
+            logging.error("2. Use a smaller directory with 'cq dump <smaller_dir>'")
+            logging.error("3. Use fewer files by being more specific with your dump paths")
+            return None
+        else:
+            # Re-raise other ValueError exceptions
+            raise
+    except Exception as e:
+        logging.error(f"Error during search: {e}")
+        return None
+        
     search_time = time.time() - search_start
     
     # Extract the list of files used in the context
@@ -186,6 +241,18 @@ def chat_with_context(
         
         # Calculate and show input tokens
         prompt_tokens = sum(count_tokens(m["content"], chat_model) for m in messages)
+        
+        # Check if we're going to exceed the model's token limit
+        token_limit = get_model_token_limit(chat_model)
+        if prompt_tokens > token_limit:
+            logging.error(f"Chat prompt exceeds the token limit for model {chat_model}.")
+            logging.error(f"Token count: {prompt_tokens:,}, limit: {token_limit:,}")
+            logging.error("\nSuggestions:")
+            logging.error("1. Use -n/--no-context flag to chat without code context")
+            logging.error("2. Use a smaller directory with 'cq dump <smaller_dir>'")
+            logging.error("3. Use a model with larger context (e.g. --model 'openai:gpt-4-turbo')")
+            logging.error("4. Use -w/--max-window to limit context tokens (e.g. -w 4000)")
+            return None
         
         # Show context info AFTER files list but BEFORE API call
         logging.info(f"Input tokens: {prompt_tokens:,}")
@@ -273,6 +340,18 @@ def chat_with_context(
 
     # Calculate and show input tokens
     prompt_tokens = sum(count_tokens(m["content"], chat_model) for m in messages)
+    
+    # Check if we're going to exceed the model's token limit
+    token_limit = get_model_token_limit(chat_model)
+    if prompt_tokens > token_limit:
+        logging.error(f"Chat prompt exceeds the token limit for model {chat_model}.")
+        logging.error(f"Token count: {prompt_tokens:,}, limit: {token_limit:,}")
+        logging.error("\nSuggestions:")
+        logging.error("1. Use -n/--no-context flag to chat without code context")
+        logging.error("2. Use a smaller directory with 'cq dump <smaller_dir>'")
+        logging.error("3. Use a model with larger context (e.g. --model 'openai:gpt-4-turbo')")
+        logging.error("4. Use -w/--max-window to limit context tokens (e.g. -w 4000)")
+        return None
     
     # Show context info AFTER files list but BEFORE API call
     logging.info(f"Input tokens: {prompt_tokens:,}")

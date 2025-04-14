@@ -3,6 +3,7 @@
 import argparse
 import sys
 import logging
+import openai
 
 # We import our command modules:
 from cq.commands import embed_cmd
@@ -80,4 +81,29 @@ def main():
     # Parse CLI args, set up logging, and dispatch:
     args = parser.parse_args()
     setup_logging(getattr(args, "verbose", False))
-    args.func(args)
+    
+    try:
+        args.func(args)
+    except openai.BadRequestError as e:
+        logging.error(f"OpenAI API Error: {e}")
+        error_msg = str(e)
+        if "maximum context length" in error_msg and "tokens" in error_msg:
+            logging.error("\nSuggestions:")
+            logging.error("1. Use -n/--no-context flag to chat without code context")
+            logging.error("2. Use a smaller directory with 'cq dump <smaller_dir>'") 
+            logging.error("3. Use a model with larger context (e.g. --model 'openai:gpt-4-turbo')")
+            logging.error("4. Use -w/--max-window to limit context tokens (e.g. -w 4000)")
+        sys.exit(1)
+    except openai.AuthenticationError:
+        logging.error("Invalid OpenAI API key. Please check your OPENAI_API_KEY environment variable.")
+        sys.exit(1)
+    except (openai.APIConnectionError, openai.APITimeoutError) as e:
+        logging.error(f"Connection error: {e}")
+        logging.error("Please check your internet connection and ensure required services are running.")
+        sys.exit(1)
+    except Exception as e:
+        logging.error(f"Unexpected error: {e}")
+        if hasattr(args, "verbose") and args.verbose:
+            import traceback
+            logging.error(traceback.format_exc())
+        sys.exit(1)

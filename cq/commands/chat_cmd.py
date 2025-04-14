@@ -168,8 +168,9 @@ def handle_chat(args):
         full_query = args.query or ""
         if stdin_content:
             if full_query:
-                full_query = f"{full_query}\n\nAdditionally, this content:\n\n{stdin_content}"
+                full_query = f"Here is the content I'm asking about:\n\n{stdin_content}\n\nMy question: {full_query}"
             else:
+                # If somehow --query wasn't specified, but we have stdin, treat that as the entire prompt
                 full_query = stdin_content
 
         # If there's still no content at all, nothing to do
@@ -304,25 +305,31 @@ def handle_chat(args):
         else:
             # If somehow --query wasn't specified, but we have stdin, treat that as the entire prompt
             full_query = stdin_content
-
+    
     start_time = time.time()
-
-    # Perform the chat with context from the specified Qdrant collection
+    
+    # Update: check for empty result from chat_with_context
     result = chat_with_context(
         query=full_query,
         collection_name=collection_name,
         qdrant_client=client,
         embed_model=config["openai_embed_model"],
-        chat_model=config["openai_chat_model"],
+        chat_model=model_name,
         top_k=args.num_results,
         verbose=args.verbose,
         max_context_tokens=args.max_window,
         reasoning_effort=args.reasoning_effort
     )
-
+    
     end_time = time.time()
+    
+    # Handle the case where chat_with_context returns None due to errors
+    if result is None:
+        logging.error("Chat failed due to errors. See above messages for details.")
+        sys.exit(1)
+    
     total_time = end_time - start_time
-
+    
     logging.info(f"Total time: {total_time:.2f} seconds")
     logging.info("=== Detailed Timing & Usage ===")
     logging.info(f"Input tokens: {result['prompt_tokens']:,} tokens")

@@ -49,6 +49,12 @@ def register_subparser(subparsers):
         action="store_true",
         help="Ignore .gitignore patterns (default: respect .gitignore)"
     )
+    dump_parser.add_argument(
+        "--exclude",
+        action="append",
+        default=[],
+        help="Patterns to exclude (can be specified multiple times)"
+    )
     
     dump_parser.set_defaults(func=handle_dump)
 
@@ -72,6 +78,23 @@ def get_gitignore_spec():
         )
     except Exception as e:
         logging.warning(f"[Dump] Error reading .gitignore: {e}")
+        return None
+
+def get_exclude_spec(patterns):
+    """
+    Create a pathspec object from the provided exclude patterns.
+    Returns None if no patterns are provided.
+    """
+    if not patterns:
+        return None
+    
+    try:
+        return pathspec.PathSpec.from_lines(
+            pathspec.patterns.GitWildMatchPattern, 
+            patterns
+        )
+    except Exception as e:
+        logging.warning(f"[Dump] Error creating exclude patterns: {e}")
         return None
 
 def get_files_from_path(path, recursive=False, gitignore_spec=None):
@@ -162,12 +185,33 @@ def is_binary_file(file_path):
     except Exception:
         return True  # Assume binary if we can't read it
     
-def is_excluded_file(file_path):
+def is_excluded_file(file_path, exclude_spec=None):
     """
     Check if a file should be excluded (like __pycache__ directories).
+    Also checks against custom exclude patterns if provided.
     """
     parts = Path(file_path).parts
-    return "__pycache__" in parts or ".git" in parts
+    
+    # Check hardcoded exclusions
+    if "__pycache__" in parts or ".git" in parts:
+        return True
+    
+    # Check against custom exclude patterns
+    if exclude_spec:
+        # Use the filename for the match
+        rel_path = Path(file_path).name
+        
+        # Try to get a relative path if possible
+        try:
+            rel_path = os.path.relpath(file_path)
+        except ValueError:
+            # This can happen on Windows with paths on different drives
+            pass
+        
+        if exclude_spec.match_file(rel_path):
+            return True
+    
+    return False
 
 def get_display_path(file_path):
     """
@@ -195,7 +239,7 @@ def get_display_path(file_path):
     # Ensure forward slashes for consistency across platforms
     return display_path.replace(os.sep, '/')
 
-def process_file_for_tokens(file_path, include_binary=False):
+def process_file_for_tokens(file_path, include_binary=False, exclude_spec=None):
     """
     Process a file to get its token count and display path.
     Returns (token_count, display_path) or None if the file should be skipped.
@@ -204,7 +248,7 @@ def process_file_for_tokens(file_path, include_binary=False):
         logging.warning(f"[Dump] Not a file: {file_path}")
         return None
     
-    if is_excluded_file(file_path):
+    if is_excluded_file(file_path, exclude_spec):
         if logging.getLogger().level <= logging.DEBUG:
             logging.debug(f"[Dump] Skipping excluded file: {file_path}")
         return None
@@ -235,11 +279,11 @@ def process_file_for_tokens(file_path, include_binary=False):
     
     return (token_count, display_path, content)
 
-def dump_file(file_path, include_binary=False, print_content=True):
+def dump_file(file_path, include_binary=False, print_content=True, exclude_spec=None):
     """
     Dump the contents of a file in the BEGIN/END format.
     """
-    result = process_file_for_tokens(file_path, include_binary)
+    result = process_file_for_tokens(file_path, include_binary, exclude_spec)
     if result is None:
         return
     
@@ -262,6 +306,11 @@ def handle_dump(args):
         if gitignore_spec and args.verbose:
             logging.info("[Dump] Using .gitignore patterns to filter files")
     
+    # Create exclude spec from provided patterns
+    exclude_spec = get_exclude_spec(args.exclude)
+    if exclude_spec and args.verbose:
+        logging.info(f"[Dump] Using {len(args.exclude)} custom exclude patterns")
+    
     # Process each path argument
     all_files = []
     
@@ -278,7 +327,7 @@ def handle_dump(args):
     # Filter files
     filtered_files = []
     for file in all_files:
-        if not is_excluded_file(file) and (args.include_binary or not is_binary_file(file)):
+        if not is_excluded_file(file, exclude_spec) and (args.include_binary or not is_binary_file(file)):
             filtered_files.append(file)
     
     if args.verbose:
@@ -302,7 +351,7 @@ def handle_dump(args):
         total_tokens = 0
         
         for file in filtered_files:
-            result = process_file_for_tokens(file, args.include_binary)
+            result = process_file_for_tokens(file, args.include_binary, exclude_spec)
             if result is not None:
                 token_count, display_path, content = result
                 file_token_data.append((token_count, display_path, content))
@@ -334,4 +383,4 @@ def handle_dump(args):
     # If not counting tokens, just dump the files
     else:
         for file in filtered_files:
-            dump_file(file, args.include_binary, print_content) 
+            dump_file(file, args.include_binary, print_content, exclude_spec) 

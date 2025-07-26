@@ -22,6 +22,7 @@ def load_config():
         "openai_chat_model": os.getenv("OPENAI_CHAT_MODEL", "gpt-3.5-turbo"),
         "qdrant_host": os.getenv("QDRANT_HOST", "127.0.0.1"),
         "qdrant_port": int(os.getenv("QDRANT_PORT", "6333")),
-        "qdrant_collection": os.getenv("QDRANT_COLLECTION", "codebase_functions")
+        "qdrant_collection": os.getenv("QDRANT_COLLECTION", "codebase_functions"),
+        "max_chunk_tokens": int(os.getenv("CODEQUERY_MAX_CHUNK_TOKENS", "384"))
     }
 

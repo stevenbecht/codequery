@@ -11,6 +11,7 @@ from openai import OpenAI
 import tiktoken
 from qdrant_client import QdrantClient
 from qdrant_client.models import VectorParams, Distance
+from cq.config import load_config
 
 # NEW: import pathspec for .gitignore handling
 try:
@@ -93,11 +94,15 @@ def chunk_by_line_ranges(
             "file_path": file_path,
         }
 
-def chunk_file_python(file_path: str, model: str = "gpt-3.5-turbo", max_tokens: int = 1500):
+def chunk_file_python(file_path: str, model: str = "gpt-3.5-turbo", max_tokens: int = None):
     """
     Parse a Python file into function-level chunks if possible,
     else fallback to line-based chunking for large functions.
     """
+    if max_tokens is None:
+        config = load_config()
+        max_tokens = config["max_chunk_tokens"]
+    
     try:
         with open(file_path, "r", encoding="utf-8") as f:
             source = f.read()
@@ -173,11 +178,15 @@ def chunk_file_python(file_path: str, model: str = "gpt-3.5-turbo", max_tokens: 
                 "file_path": file_path
             }
 
-def chunk_file_generic(file_path: str, model: str = "gpt-3.5-turbo", max_tokens: int = 1500):
+def chunk_file_generic(file_path: str, model: str = "gpt-3.5-turbo", max_tokens: int = None):
     """
     Naive chunking for non-Python files (e.g., JS, TS, PHP).
     Reads the file as lines and chunks if needed based on max_tokens.
     """
+    if max_tokens is None:
+        config = load_config()
+        max_tokens = config["max_chunk_tokens"]
+    
     try:
         with open(file_path, "r", encoding="utf-8") as f:
             source = f.read()
@@ -231,7 +240,7 @@ def chunk_directory(
     directory: str,
     recursive: bool = False,
     model: str = "gpt-3.5-turbo",
-    max_tokens: int = 1500
+    max_tokens: int = None
 ):
     """
     Traverse the directory (optionally recursive) and yield code chunks
@@ -240,6 +249,10 @@ def chunk_directory(
 
     Now also honors `.gitignore` if present in `directory`.
     """
+    if max_tokens is None:
+        config = load_config()
+        max_tokens = config["max_chunk_tokens"]
+    
     gitignore_spec = _load_gitignore_patterns(directory)
     
     # Log once that we're using gitignore
@@ -332,7 +345,7 @@ def index_codebase_in_qdrant(
     embed_model: str,
     verbose: bool = False,
     recursive: bool = False,
-    max_tokens: int = 1500,
+    max_tokens: int = None,
     recreate: bool = False
 ):
     """
@@ -346,6 +359,10 @@ def index_codebase_in_qdrant(
     NEW: We also store a single "metadata" point with "root_dir" so that
     child folders can auto-detect the correct collection to use at query time.
     """
+    if max_tokens is None:
+        config = load_config()
+        max_tokens = config["max_chunk_tokens"]
+    
     # If user wants a fresh index:
     if recreate:
         if qdrant_client.collection_exists(collection_name):

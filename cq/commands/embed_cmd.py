@@ -309,7 +309,7 @@ def handle_embed(args):
             embed_model=config["openai_embed_model"],
             verbose=args.verbose,
             recursive=args.recursive,
-            max_tokens=1500,
+            max_tokens=config["max_chunk_tokens"],
             recreate=recreate_flag
         )
         # Only recreate once (for first directory, if multiple were provided)

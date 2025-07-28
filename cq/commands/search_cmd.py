@@ -8,7 +8,7 @@ from requests.exceptions import ConnectionError as RequestsConnectionError
 
 from cq.config import load_config
 from cq.search import search_codebase_in_qdrant
-from .util import get_qdrant_client
+from cq.shared import get_qdrant_client, find_collection_for_current_dir
 
 def register_subparser(subparsers):
     """
@@ -121,52 +121,6 @@ def _safe_search(client, collection_name, query, top_k, embed_model, verbose=Fal
         logging.warning(f"[Search] Error searching collection '{collection_name}': {e}")
         return None
 
-def _find_collection_for_current_dir(client, current_dir):
-    """
-    Attempt to auto-detect which Qdrant collection corresponds
-    to 'current_dir' by checking any 'collection_meta' root_dir
-    payload in each collection. We pick the one for which
-    root_dir is an ancestor of current_dir (commonpath == root_dir).
-    If multiple match, pick the longest root_dir.
-    Return the matching collection name, or None if none found.
-    """
-    try:
-        collections_info = client.get_collections()
-        all_collections = [c.name for c in collections_info.collections]
-        best_match = None
-        best_len = 0
-
-        for coll_name in all_collections:
-            # Scroll or query to find the special metadata record:
-            try:
-                points_batch, _ = client.scroll(
-                    collection_name=coll_name,
-                    limit=1_000,  # in small codebases, 1000 is enough to find id=0 easily
-                    with_payload=True,
-                    with_vectors=False
-                )
-                for p in points_batch:
-                    pl = p.payload
-                    if not pl:
-                        continue
-                    # Check if this is the "collection_meta" record
-                    if pl.get("collection_meta") and "root_dir" in pl:
-                        root_dir = os.path.abspath(pl["root_dir"])
-                        cur_dir_abs = os.path.abspath(current_dir)
-                        common = os.path.commonpath([root_dir, cur_dir_abs])
-                        if common == root_dir:
-                            # current_dir is inside root_dir or equal to it
-                            rlen = len(root_dir)
-                            if rlen > best_len:
-                                best_len = rlen
-                                best_match = coll_name
-            except:
-                pass
-
-        return best_match
-    except Exception as e:
-        logging.debug(f"[Search] Error in _find_collection_for_current_dir: {e}")
-        return None
 
 def handle_search(args):
     """
@@ -260,7 +214,7 @@ def handle_search(args):
             collection_name = args.collection
             logging.debug(f"[Search] Using user-provided collection name: {collection_name}")
         else:
-            auto_coll = _find_collection_for_current_dir(client, os.getcwd())
+            auto_coll = find_collection_for_current_dir(client, os.getcwd())
             if auto_coll:
                 collection_name = auto_coll
                 logging.debug(f"[Search] Auto-detected collection '{collection_name}' for current directory.")

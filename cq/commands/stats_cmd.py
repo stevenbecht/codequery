@@ -4,7 +4,7 @@ import openai
 import os
 
 from cq.config import load_config
-from .util import get_qdrant_client
+from cq.shared import get_qdrant_client
 
 def register_subparser(subparsers):
     """

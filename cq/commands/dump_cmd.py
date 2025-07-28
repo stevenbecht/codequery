@@ -6,7 +6,7 @@ from pathlib import Path
 import pathspec
 
 # Import token counting functionality
-from cq.embedding import count_tokens
+from cq.shared import count_tokens
 
 def register_subparser(subparsers):
     """

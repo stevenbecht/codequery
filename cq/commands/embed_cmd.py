@@ -6,7 +6,7 @@ import datetime
 
 from cq.config import load_config
 from cq.embedding import index_codebase_in_qdrant
-from .util import get_qdrant_client
+from cq.shared import get_qdrant_client, find_collection_for_current_dir
 
 def register_subparser(subparsers):
     """
@@ -62,49 +62,6 @@ def _format_timestamp(ts: float) -> str:
         return "N/A"
     return datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
 
-def _find_collection_for_current_dir(client, current_dir):
-    """
-    Auto-detect which Qdrant collection corresponds to 'current_dir'
-    by checking the special 'collection_meta' record that stores 'root_dir'.
-    If multiple matches, pick the one with the longest root_dir (most specific).
-    Return the matching collection name, or None if none found.
-    """
-    try:
-        collections_info = client.get_collections()
-        all_collections = [c.name for c in collections_info.collections]
-        best_match = None
-        best_len = 0
-
-        for coll_name in all_collections:
-            # We'll scroll to find that metadata record
-            try:
-                points_batch, _ = client.scroll(
-                    collection_name=coll_name,
-                    limit=1000,  # should be enough to find id=0 if it exists
-                    with_payload=True,
-                    with_vectors=False
-                )
-                for p in points_batch:
-                    pl = p.payload
-                    if not pl:
-                        continue
-                    if pl.get("collection_meta") and "root_dir" in pl:
-                        root_dir = os.path.abspath(pl["root_dir"])
-                        cur_dir_abs = os.path.abspath(current_dir)
-                        common = os.path.commonpath([root_dir, cur_dir_abs])
-                        if common == root_dir:
-                            # current_dir is inside root_dir
-                            rlen = len(root_dir)
-                            if rlen > best_len:
-                                best_len = rlen
-                                best_match = coll_name
-            except:
-                pass
-
-        return best_match
-    except Exception as e:
-        logging.debug(f"[Embed] Error in _find_collection_for_current_dir: {e}")
-        return None
 
 def handle_embed(args):
     """
@@ -131,7 +88,7 @@ def handle_embed(args):
         collection_name = args.collection
         logging.debug(f"[Embed] Using user-specified collection: {collection_name}")
     else:
-        auto_coll = _find_collection_for_current_dir(client, os.getcwd())
+        auto_coll = find_collection_for_current_dir(client, os.getcwd())
         if auto_coll:
             collection_name = auto_coll
             logging.debug(f"[Embed] Auto-detected collection '{collection_name}' for current directory.")

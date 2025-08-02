@@ -9,6 +9,7 @@ from requests.exceptions import ConnectionError as RequestsConnectionError
 from cq.config import load_config
 from cq.search import search_codebase_in_qdrant
 from cq.shared import get_qdrant_client, find_collection_for_current_dir
+from cq.providers import get_embedding_provider
 
 def register_subparser(subparsers):
     """
@@ -99,7 +100,7 @@ def guess_language_from_extension(file_path: str) -> str:
     }
     return ext_map.get(ext, "plaintext")
 
-def _safe_search(client, collection_name, query, top_k, embed_model, verbose=False):
+def _safe_search(client, collection_name, query, top_k, embed_model, verbose=False, provider=None):
     """
     Helper function to do the actual Qdrant query,
     returning None if the collection is empty or doesn't exist.
@@ -115,7 +116,8 @@ def _safe_search(client, collection_name, query, top_k, embed_model, verbose=Fal
             qdrant_client=client,
             embed_model=embed_model,
             top_k=top_k,
-            verbose=verbose
+            verbose=verbose,
+            provider=provider
         )
     except Exception as e:
         logging.warning(f"[Search] Error searching collection '{collection_name}': {e}")
@@ -128,8 +130,19 @@ def handle_search(args):
     then does a Qdrant query, prints results (including STALE columns).
     """
     config = load_config()
-
-    if not openai.api_key:
+    
+    # Get the embedding provider
+    try:
+        provider = get_embedding_provider(config)
+    except ImportError as e:
+        logging.error(str(e))
+        sys.exit(1)
+    except Exception as e:
+        logging.error(f"Failed to initialize embedding provider: {e}")
+        sys.exit(1)
+    
+    # Check API key only for OpenAI provider
+    if config.get("embedding_provider", "openai") == "openai" and not openai.api_key:
         logging.error("No valid OPENAI_API_KEY set. Please update your .env or environment.")
         sys.exit(1)
 
@@ -166,13 +179,20 @@ def handle_search(args):
 
             # Query each collection, then merge
             for coll_name in all_collections:
+                # Use the appropriate model based on provider
+                if provider.get_provider_name() == "openai":
+                    embed_model = config["openai_embed_model"]
+                else:
+                    embed_model = config["local_embed_model"]
+                
                 sub_results = _safe_search(
                     client=client,
                     collection_name=coll_name,
                     query=args.query,
                     top_k=num_results,
-                    embed_model=config["openai_embed_model"],
-                    verbose=args.verbose
+                    embed_model=embed_model,
+                    verbose=args.verbose,
+                    provider=provider
                 )
                 if not sub_results:
                     continue
@@ -224,13 +244,20 @@ def handle_search(args):
                 logging.debug(f"[Search] No auto-detected match. Default to: {collection_name}")
 
         try:
+            # Use the appropriate model based on provider
+            if provider.get_provider_name() == "openai":
+                embed_model = config["openai_embed_model"]
+            else:
+                embed_model = config["local_embed_model"]
+            
             search_results = _safe_search(
                 client=client,
                 collection_name=collection_name,
                 query=args.query,
                 top_k=num_results,
-                embed_model=config["openai_embed_model"],
-                verbose=args.verbose
+                embed_model=embed_model,
+                verbose=args.verbose,
+                provider=provider
             )
             if not search_results:
                 logging.info("[Search] No data found or collection is empty.")

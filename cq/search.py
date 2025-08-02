@@ -7,6 +7,8 @@ import sys
 import threading
 
 from .embedding import count_tokens
+from .providers import get_embedding_provider
+from .config import load_config
 
 def get_model_token_limit(model_name):
     """
@@ -40,11 +42,36 @@ def search_codebase_in_qdrant(
     qdrant_client: QdrantClient,
     embed_model: str,
     top_k: int = 3,
-    verbose: bool = False
+    verbose: bool = False,
+    provider=None
 ):
     """Embed `query`, search Qdrant for top_k results."""
+    # Get provider if not provided
+    if provider is None:
+        config = load_config()
+        provider = get_embedding_provider(config)
+    
+    # Validate collection compatibility
+    if qdrant_client.collection_exists(collection_name):
+        # Try to get collection metadata
+        try:
+            metadata_points = qdrant_client.retrieve(
+                collection_name=collection_name,
+                ids=[0],  # Metadata is stored at ID 0
+                with_payload=True,
+                with_vectors=False
+            )
+            if metadata_points and metadata_points[0].payload:
+                collection_metadata = metadata_points[0].payload
+                # Only validate if we have provider metadata
+                if "embedding_provider" in collection_metadata:
+                    provider.validate_compatibility(collection_metadata)
+        except Exception as e:
+            # If we can't get metadata, log warning but continue
+            logging.warning(f"Could not validate collection compatibility: {e}")
+    
     # Get query embedding and count tokens
-    query_tokens = count_tokens(query, embed_model)
+    query_tokens = count_tokens(query, embed_model, provider)
     
     # Check model token limits
     token_limit = get_model_token_limit(embed_model)
@@ -56,8 +83,9 @@ def search_codebase_in_qdrant(
             f"Try reducing the amount of code or using a smaller context."
         )
         
-    client = OpenAI()
-    query_emb = client.embeddings.create(model=embed_model, input=query).data[0].embedding
+    # Get query embedding using provider
+    query_embeddings, _ = provider.embed_batch([query])
+    query_emb = query_embeddings[0]
     
     response = qdrant_client.query_points(
         collection_name=collection_name,
@@ -69,7 +97,7 @@ def search_codebase_in_qdrant(
     
     # Calculate total tokens in matched snippets
     total_snippet_tokens = sum(
-        count_tokens(point.payload['code'], embed_model) 
+        count_tokens(point.payload['code'], embed_model, provider) 
         for point in response.points
     )
     
@@ -97,7 +125,8 @@ def build_context_snippets_limited(
     results,
     max_context_tokens: int,
     model: str = "gpt-3.5-turbo",
-    overhead_tokens: int = 200
+    overhead_tokens: int = 200,
+    provider=None
 ):
     """
     Similar to build_context_snippets, but stops adding snippets
@@ -122,7 +151,7 @@ def build_context_snippets_limited(
             f"(lines {pl['start_line']}-{pl['end_line']}):\n"
             f"{pl['code']}\n"
         )
-        snippet_tokens = count_tokens(snippet_text, model)
+        snippet_tokens = count_tokens(snippet_text, model, provider)
         all_snippets_tokens += snippet_tokens
     
     # Now build the context that fits within the budget
@@ -133,7 +162,7 @@ def build_context_snippets_limited(
             f"(lines {pl['start_line']}-{pl['end_line']}):\n"
             f"{pl['code']}\n"
         )
-        snippet_tokens = count_tokens(snippet_text, model)
+        snippet_tokens = count_tokens(snippet_text, model, provider)
 
         if total + snippet_tokens > budget:
             truncated = True
@@ -160,15 +189,21 @@ def chat_with_context(
     top_k: int = 3,
     verbose: bool = False,
     max_context_tokens: int = None,
-    reasoning_effort: str = "medium"
+    reasoning_effort: str = "medium",
+    provider=None
 ):
     """Search, build context, and send to OpenAI ChatCompletion."""
+    # Get provider if not provided
+    if provider is None:
+        config = load_config()
+        provider = get_embedding_provider(config)
+    
     # Time the search operation
     search_start = time.time()
-    query_tokens = count_tokens(query, embed_model)
+    query_tokens = count_tokens(query, embed_model, provider)
     
     try:
-        results = search_codebase_in_qdrant(query, collection_name, qdrant_client, embed_model, top_k, verbose)
+        results = search_codebase_in_qdrant(query, collection_name, qdrant_client, embed_model, top_k, verbose, provider)
     except ValueError as e:
         if "exceeds the token limit" in str(e):
             logging.error(f"Token limit exceeded: {e}")
@@ -223,7 +258,8 @@ def chat_with_context(
         context_text = build_context_snippets_limited(
             results['points'],
             max_context_tokens=max_context_tokens,
-            model=chat_model
+            model=chat_model,
+            provider=provider
         )
 
     # Time the chat operation
@@ -240,7 +276,8 @@ def chat_with_context(
         ]
         
         # Calculate and show input tokens
-        prompt_tokens = sum(count_tokens(m["content"], chat_model) for m in messages)
+        # For chat models, we still use tiktoken for now
+        prompt_tokens = sum(count_tokens(m["content"], chat_model, None) for m in messages)
         
         # Check if we're going to exceed the model's token limit
         token_limit = get_model_token_limit(chat_model)
@@ -306,7 +343,8 @@ def chat_with_context(
         chat_time = time.time() - chat_start
         
         # Calculate token usage
-        completion_tokens = count_tokens(resp.choices[0].message.content, chat_model)
+        # For chat models, we still use tiktoken for now
+        completion_tokens = count_tokens(resp.choices[0].message.content, chat_model, None)
         total_tokens = prompt_tokens + completion_tokens
         
         logging.info("\n=== Detailed Timing & Usage ===")

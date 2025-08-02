@@ -11,6 +11,7 @@ import threading
 from cq.config import load_config
 from cq.search import chat_with_context
 from cq.shared import get_qdrant_client, find_collection_for_current_dir, count_tokens
+from cq.providers import get_embedding_provider
 
 def register_subparser(subparsers):
     """
@@ -71,8 +72,20 @@ def handle_chat(args):
         * Else, check if the target collection exists, then calls chat_with_context().
     """
     config = load_config()
+    
+    # Get the embedding provider for search (not needed for no-context mode)
+    provider = None
+    if not args.no_context and not args.list_models:
+        try:
+            provider = get_embedding_provider(config)
+        except ImportError as e:
+            logging.error(str(e))
+            sys.exit(1)
+        except Exception as e:
+            logging.error(f"Failed to initialize embedding provider: {e}")
+            sys.exit(1)
 
-    # Ensure we have an OpenAI key
+    # Ensure we have an OpenAI key for chat (always needed)
     if not openai.api_key:
         logging.error("No valid OPENAI_API_KEY set. Please update your .env or environment.")
         sys.exit(1)
@@ -267,16 +280,25 @@ def handle_chat(args):
     start_time = time.time()
     
     # Update: check for empty result from chat_with_context
+    # Use the appropriate model based on provider
+    if provider and provider.get_provider_name() == "openai":
+        embed_model = config["openai_embed_model"]
+    elif provider:
+        embed_model = config["local_embed_model"]
+    else:
+        embed_model = config["openai_embed_model"]  # fallback
+    
     result = chat_with_context(
         query=full_query,
         collection_name=collection_name,
         qdrant_client=client,
-        embed_model=config["openai_embed_model"],
+        embed_model=embed_model,
         chat_model=model_name,
         top_k=args.num_results,
         verbose=args.verbose,
         max_context_tokens=args.max_window,
-        reasoning_effort=args.reasoning_effort
+        reasoning_effort=args.reasoning_effort,
+        provider=provider
     )
     
     end_time = time.time()

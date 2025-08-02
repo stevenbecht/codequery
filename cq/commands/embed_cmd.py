@@ -7,6 +7,7 @@ import datetime
 from cq.config import load_config
 from cq.embedding import index_codebase_in_qdrant
 from cq.shared import get_qdrant_client, find_collection_for_current_dir
+from cq.providers import get_embedding_provider
 
 def register_subparser(subparsers):
     """
@@ -42,6 +43,24 @@ def register_subparser(subparsers):
         "-v", "--verbose", action="store_true",
         help="Verbose output"
     )
+    
+    # Provider selection arguments
+    embed_parser.add_argument(
+        "--provider", type=str, choices=["openai", "local"], default=None,
+        help="Embedding provider to use (default: from environment or 'openai')"
+    )
+    embed_parser.add_argument(
+        "--local-model", type=str, default=None,
+        help="Local model name when using local provider (default: from environment or 'all-MiniLM-L6-v2')"
+    )
+    embed_parser.add_argument(
+        "--device", type=str, choices=["cpu", "cuda", "mps", "auto"], default=None,
+        help="Device to use for local embeddings (default: from environment or 'auto')"
+    )
+    embed_parser.add_argument(
+        "--batch-size", type=int, default=None,
+        help="Batch size for embedding (default: from environment or provider-specific)"
+    )
 
     # --list and --dump
     embed_parser.add_argument(
@@ -76,8 +95,29 @@ def handle_embed(args):
     if you don't provide a specific --collection.
     """
     config = load_config()
-
-    if not openai.api_key:
+    
+    # Override config with CLI arguments if provided
+    if args.provider:
+        config["embedding_provider"] = args.provider
+    if args.local_model:
+        config["local_embed_model"] = args.local_model
+    if args.device:
+        config["embed_device"] = args.device
+    if args.batch_size:
+        config["embed_batch_size"] = args.batch_size
+    
+    # Get the embedding provider
+    try:
+        provider = get_embedding_provider(config)
+    except ImportError as e:
+        logging.error(str(e))
+        sys.exit(1)
+    except Exception as e:
+        logging.error(f"Failed to initialize embedding provider: {e}")
+        sys.exit(1)
+    
+    # Check API key only for OpenAI provider
+    if config.get("embedding_provider", "openai") == "openai" and not openai.api_key:
         logging.error("No valid OPENAI_API_KEY set. Please update your .env or environment.")
         sys.exit(1)
 
@@ -259,15 +299,22 @@ def handle_embed(args):
 
     for directory in args.directories:
         logging.info(f"[Embed] Embedding directory: {directory}")
+        # Use the appropriate model based on provider
+        if provider.get_provider_name() == "openai":
+            embed_model = config["openai_embed_model"]
+        else:
+            embed_model = config["local_embed_model"]
+        
         index_codebase_in_qdrant(
             directory=directory,
             collection_name=collection_name,
             qdrant_client=client,
-            embed_model=config["openai_embed_model"],
+            embed_model=embed_model,
             verbose=args.verbose,
             recursive=args.recursive,
             max_tokens=config["max_chunk_tokens"],
-            recreate=recreate_flag
+            recreate=recreate_flag,
+            provider=provider
         )
         # Only recreate once (for first directory, if multiple were provided)
         if recreate_flag:

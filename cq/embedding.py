@@ -12,6 +12,7 @@ import tiktoken
 from qdrant_client import QdrantClient
 from qdrant_client.models import VectorParams, Distance
 from cq.config import load_config
+from cq.providers import get_embedding_provider
 
 # NEW: import pathspec for .gitignore handling
 try:
@@ -20,37 +21,19 @@ except ImportError:
     logging.warning("[GitIgnore] `pathspec` not installed. `.gitignore` patterns won't be applied.")
     pathspec = None
 
-def count_tokens(text: str, model: str = "gpt-3.5-turbo") -> int:
-    """Return the token count of `text` using tiktoken."""
-    try:
-        enc = tiktoken.encoding_for_model(model)
-    except KeyError:
-        enc = tiktoken.get_encoding("cl100k_base")
-    return len(enc.encode(text))
-
-def openai_with_retry(fn, *args, max_retries=5, base_wait=2, **kwargs):
-    """
-    Enhanced retry logic to handle various OpenAI errors.
-    Updated for OpenAI API v1.0+
-    """
-    for attempt in range(max_retries):
+def count_tokens(text: str, model: str = "gpt-3.5-turbo", provider=None) -> int:
+    """Return the token count of `text` using appropriate tokenizer."""
+    if provider:
+        # Use provider's token counting method
+        return provider.get_token_count(text)
+    else:
+        # Fallback to tiktoken for backward compatibility
         try:
-            return fn(*args, **kwargs)
-        except (openai.RateLimitError, openai.APIStatusError) as e:
-            sleep_time = base_wait * (2 ** attempt)
-            logging.warning(f"[OpenAI API Error] Sleeping {sleep_time}s, attempt {attempt+1}/{max_retries}. Error: {e}")
-            time.sleep(sleep_time)
-        except openai.APITimeoutError:
-            sleep_time = base_wait * (2 ** attempt)
-            logging.warning(f"[OpenAI Timeout] Sleeping {sleep_time}s, attempt {attempt+1}/{max_retries}")
-            time.sleep(sleep_time)
-        except openai.APIConnectionError as e:
-            logging.error(f"Could not connect to OpenAI API. Please check your internet connection. Error: {e}")
-            sys.exit(1)
-        except Exception as e:
-            logging.error(f"Unexpected OpenAI API error: {e}")
-            sys.exit(1)
-    raise Exception("[Error] Max retries reached for OpenAI call.")
+            enc = tiktoken.encoding_for_model(model)
+        except KeyError:
+            enc = tiktoken.get_encoding("cl100k_base")
+        return len(enc.encode(text))
+
 
 def chunk_by_line_ranges(
     lines: list[str],
@@ -58,7 +41,8 @@ def chunk_by_line_ranges(
     func_name: str,
     start_line: int,
     model: str = "gpt-3.5-turbo",
-    max_tokens: int = 512
+    max_tokens: int = 512,
+    provider=None
 ):
     """
     Splits code by lines if a single block is too large for max_tokens.
@@ -70,7 +54,7 @@ def chunk_by_line_ranges(
     for i, line_text in enumerate(lines, start=start_line):
         current_chunk.append(line_text)
         snippet = "".join(current_chunk)
-        snippet_tokens = count_tokens(snippet, model)
+        snippet_tokens = count_tokens(snippet, model, provider)
 
         if snippet_tokens > max_tokens:
             end_line = i - 1
@@ -94,7 +78,7 @@ def chunk_by_line_ranges(
             "file_path": file_path,
         }
 
-def chunk_file_python(file_path: str, model: str = "gpt-3.5-turbo", max_tokens: int = None):
+def chunk_file_python(file_path: str, model: str = "gpt-3.5-turbo", max_tokens: int = None, provider=None):
     """
     Parse a Python file into function-level chunks if possible,
     else fallback to line-based chunking for large functions.
@@ -131,7 +115,7 @@ def chunk_file_python(file_path: str, model: str = "gpt-3.5-turbo", max_tokens: 
                 covered_lines.add(ln)
 
             code_snippet = "".join(lines[start_line:end_line])
-            snippet_tokens = count_tokens(code_snippet, model)
+            snippet_tokens = count_tokens(code_snippet, model, provider)
 
             if snippet_tokens > max_tokens:
                 yield from chunk_by_line_ranges(
@@ -140,7 +124,8 @@ def chunk_file_python(file_path: str, model: str = "gpt-3.5-turbo", max_tokens: 
                     func_name=node.name,
                     start_line=start_line,
                     model=model,
-                    max_tokens=max_tokens
+                    max_tokens=max_tokens,
+                    provider=provider
                 )
             else:
                 yield {
@@ -159,7 +144,7 @@ def chunk_file_python(file_path: str, model: str = "gpt-3.5-turbo", max_tokens: 
 
     if top_level_segments:
         combined_code = "".join(seg[1] for seg in top_level_segments)
-        if count_tokens(combined_code, model) > max_tokens:
+        if count_tokens(combined_code, model, provider) > max_tokens:
             start_line = top_level_segments[0][0]
             yield from chunk_by_line_ranges(
                 lines=[seg[1] for seg in top_level_segments],
@@ -167,7 +152,8 @@ def chunk_file_python(file_path: str, model: str = "gpt-3.5-turbo", max_tokens: 
                 func_name="top_level",
                 start_line=start_line,
                 model=model,
-                max_tokens=max_tokens
+                max_tokens=max_tokens,
+                provider=provider
             )
         else:
             yield {
@@ -178,7 +164,7 @@ def chunk_file_python(file_path: str, model: str = "gpt-3.5-turbo", max_tokens: 
                 "file_path": file_path
             }
 
-def chunk_file_generic(file_path: str, model: str = "gpt-3.5-turbo", max_tokens: int = None):
+def chunk_file_generic(file_path: str, model: str = "gpt-3.5-turbo", max_tokens: int = None, provider=None):
     """
     Naive chunking for non-Python files (e.g., JS, TS, PHP).
     Reads the file as lines and chunks if needed based on max_tokens.
@@ -195,7 +181,7 @@ def chunk_file_generic(file_path: str, model: str = "gpt-3.5-turbo", max_tokens:
         return
 
     # If entire file is within max_tokens, just yield once
-    if count_tokens(source, model) <= max_tokens:
+    if count_tokens(source, model, provider) <= max_tokens:
         yield {
             "function_name": "entire_file",
             "start_line": 0,
@@ -212,7 +198,8 @@ def chunk_file_generic(file_path: str, model: str = "gpt-3.5-turbo", max_tokens:
             func_name="entire_file",
             start_line=0,
             model=model,
-            max_tokens=max_tokens
+            max_tokens=max_tokens,
+            provider=provider
         )
 
 def _load_gitignore_patterns(base_dir: str):
@@ -240,7 +227,8 @@ def chunk_directory(
     directory: str,
     recursive: bool = False,
     model: str = "gpt-3.5-turbo",
-    max_tokens: int = None
+    max_tokens: int = None,
+    provider=None
 ):
     """
     Traverse the directory (optionally recursive) and yield code chunks
@@ -272,9 +260,9 @@ def chunk_directory(
 
             ext = os.path.splitext(file_path)[1].lower()
             if ext == ".py":
-                yield from chunk_file_python(file_path, model=model, max_tokens=max_tokens)
+                yield from chunk_file_python(file_path, model=model, max_tokens=max_tokens, provider=provider)
             elif ext in [".js", ".jsx", ".ts", ".tsx", ".php", ".go"]:
-                yield from chunk_file_generic(file_path, model=model, max_tokens=max_tokens)
+                yield from chunk_file_generic(file_path, model=model, max_tokens=max_tokens, provider=provider)
             else:
                 logging.debug(f"[ChunkDir] Skipping unrecognized file type: {file_path}")
     else:
@@ -297,9 +285,9 @@ def chunk_directory(
 
                 ext = os.path.splitext(file_name)[1].lower()
                 if ext == ".py":
-                    yield from chunk_file_python(full_path, model=model, max_tokens=max_tokens)
+                    yield from chunk_file_python(full_path, model=model, max_tokens=max_tokens, provider=provider)
                 elif ext in [".js", ".jsx", ".ts", ".tsx", ".php", ".go"]:
-                    yield from chunk_file_generic(full_path, model=model, max_tokens=max_tokens)
+                    yield from chunk_file_generic(full_path, model=model, max_tokens=max_tokens, provider=provider)
                 else:
                     logging.debug(f"[ChunkDir] Skipping unrecognized file type: {full_path}")
 
@@ -310,18 +298,27 @@ def compute_snippet_hash(text: str) -> str:
 def _store_collection_root_metadata(
     qdrant_client: QdrantClient,
     collection_name: str,
-    root_dir: str
+    root_dir: str,
+    provider_metadata: dict = None
 ):
     """
     Upsert a special metadata point indicating the root_dir for this collection,
     so that we can later detect if the user is in a descendant folder.
     """
-    # We'll just store a dummy 1536-dim vector of zeros:
-    dummy_vec = [0.0] * 1536
+    # Store metadata with provider-specific vector dimensions
+    vector_dim = 1536  # default for backward compatibility
+    if provider_metadata:
+        vector_dim = provider_metadata.get("vector_dimensions", 1536)
+    
+    dummy_vec = [0.0] * vector_dim
     payload = {
         "collection_meta": True,
         "root_dir": os.path.abspath(root_dir)
     }
+    
+    # Add provider metadata if available
+    if provider_metadata:
+        payload.update(provider_metadata)
     # We'll pick point ID = 0 for convenience
     try:
         qdrant_client.upsert(
@@ -346,7 +343,8 @@ def index_codebase_in_qdrant(
     verbose: bool = False,
     recursive: bool = False,
     max_tokens: int = None,
-    recreate: bool = False
+    recreate: bool = False,
+    provider=None
 ):
     """
     Index code from `directory` into Qdrant.
@@ -359,9 +357,20 @@ def index_codebase_in_qdrant(
     NEW: We also store a single "metadata" point with "root_dir" so that
     child folders can auto-detect the correct collection to use at query time.
     """
+    config = load_config()
     if max_tokens is None:
-        config = load_config()
         max_tokens = config["max_chunk_tokens"]
+    
+    # Get embedding provider if not provided
+    if provider is None:
+        provider = get_embedding_provider(config)
+    
+    # Get provider metadata
+    provider_metadata = provider.get_metadata()
+    vector_dim = provider.get_vector_dim()
+    
+    # Log provider information
+    logging.info(f"[Index] Using {provider.get_provider_name()} provider with model {provider.get_model_name()}")
     
     # If user wants a fresh index:
     if recreate:
@@ -370,7 +379,7 @@ def index_codebase_in_qdrant(
             qdrant_client.delete_collection(collection_name)
         qdrant_client.create_collection(
             collection_name=collection_name,
-            vectors_config=VectorParams(size=1536, distance=Distance.COSINE)
+            vectors_config=VectorParams(size=vector_dim, distance=Distance.COSINE)
         )
         known_hashes = set()
     else:
@@ -378,7 +387,7 @@ def index_codebase_in_qdrant(
         if not qdrant_client.collection_exists(collection_name):
             qdrant_client.create_collection(
                 collection_name=collection_name,
-                vectors_config=VectorParams(size=1536, distance=Distance.COSINE)
+                vectors_config=VectorParams(size=vector_dim, distance=Distance.COSINE)
             )
             known_hashes = set()
         else:
@@ -404,15 +413,16 @@ def index_codebase_in_qdrant(
             if verbose:
                 logging.debug(f"[Index] Incremental mode: found {len(known_hashes)} existing snippet hashes.")
 
-    # Store or refresh the root dir metadata
-    _store_collection_root_metadata(qdrant_client, collection_name, directory)
+    # Store or refresh the root dir metadata with provider info
+    _store_collection_root_metadata(qdrant_client, collection_name, directory, provider_metadata)
 
     all_chunks = list(
         chunk_directory(
             directory=directory,
             recursive=recursive,
             model=embed_model,
-            max_tokens=max_tokens
+            max_tokens=max_tokens,
+            provider=provider
         )
     )
     if not all_chunks:
@@ -469,31 +479,21 @@ def index_codebase_in_qdrant(
     if verbose:
         logging.debug(f"[Index] Found {len(chunks_to_embed)} new/changed snippets to embed.")
 
-    BATCH_SIZE = 100
+    # Use configured batch size from provider
+    BATCH_SIZE = config.get("embed_batch_size", 100)
     total_tokens = 0
-
-    def embed_batch(texts: list[str], model: str):
-        client = OpenAI()
-        resp = openai_with_retry(
-            client.embeddings.create,
-            model=model,
-            input=texts
-        )
-        used_tokens = resp.usage.total_tokens
-        vectors = [item.embedding for item in resp.data]
-        return vectors, used_tokens
 
     # Split into batches so we don't exceed OpenAI's request size limit
     for start_idx in range(0, len(chunks_to_embed), BATCH_SIZE):
         batch = chunks_to_embed[start_idx:start_idx + BATCH_SIZE]
         texts = [b["code"] for b in batch]
-        vectors, used_tokens = embed_batch(texts, embed_model)
+        vectors, used_tokens = provider.embed_batch(texts)
         total_tokens += used_tokens
 
         points_to_upsert = []
         for i, vec in enumerate(vectors):
             chunk_data = batch[i]
-            snippet_token_count = count_tokens(chunk_data["code"], embed_model)
+            snippet_token_count = count_tokens(chunk_data["code"], embed_model, provider)
             payload = {
                 "file_path": chunk_data["file_path"],
                 "function_name": chunk_data["function_name"],

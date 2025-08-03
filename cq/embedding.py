@@ -520,4 +520,8 @@ def index_codebase_in_qdrant(
                 f"[Index] Upserted {len(points_to_upsert)} points. Running total tokens: {total_tokens}"
             )
 
-    logging.info(f"[Index] Done embedding. Estimated total billed tokens = {total_tokens}")
+    # Show appropriate message based on provider
+    if provider.get_provider_name() == "openai":
+        logging.info(f"[Index] Done embedding. Estimated total billed tokens = {total_tokens}")
+    else:
+        logging.info(f"[Index] Done embedding. Total tokens processed = {total_tokens}")

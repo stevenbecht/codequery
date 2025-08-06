@@ -23,7 +23,7 @@ def load_config():
     default_cache_dir = os.path.join(cache_home, "codequery")
     
     # Determine default batch size based on provider
-    embedding_provider = os.getenv("EMBEDDING_PROVIDER", "openai").lower()
+    embedding_provider = os.getenv("EMBEDDING_PROVIDER", "local").lower()
     default_batch_size = "100" if embedding_provider == "openai" else "32"
 
     return {

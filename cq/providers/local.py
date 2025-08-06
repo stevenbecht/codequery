@@ -117,6 +117,7 @@ class LocalEmbeddingProvider(BaseEmbeddingProvider):
     def get_token_count(self, text: str) -> int:
         """
         Count tokens using the model's tokenizer.
+        Includes special tokens for accurate count.
         
         Args:
             text: Text to count tokens for
@@ -124,9 +125,14 @@ class LocalEmbeddingProvider(BaseEmbeddingProvider):
         Returns:
             Number of tokens
         """
-        # Use the sentence-transformers tokenizer (usually WordPiece for BERT-based models)
-        tokens = self._tokenizer.tokenize(text)
-        return len(tokens)
+        # Use Codex's efficient approach with return_length
+        enc = self._tokenizer(
+            text,
+            add_special_tokens=True,   # include [CLS]/[SEP]/etc
+            truncation=False,          # measure full length, don't truncate
+            return_length=True         # efficient length retrieval
+        )
+        return enc['length'][0]
     
     def get_vector_dim(self) -> int:
         """

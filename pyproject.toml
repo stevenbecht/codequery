@@ -18,7 +18,7 @@ dependencies = [
 [project.optional-dependencies]
 local = [
     "sentence-transformers>=2.2.0,<3.0",
-    "torch>=2.0.0"
+    "torch>=2.1.0"
 ]
 
 [project.scripts]

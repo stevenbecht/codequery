@@ -37,10 +37,7 @@ def handle_stats(args):
     """
     config = load_config()
 
-    if not openai.api_key:
-        logging.error("No valid OPENAI_API_KEY set. Please update your .env or environment.")
-        sys.exit(1)
-
+    # Stats command doesn't need OpenAI API key - it only queries Qdrant
     client = get_qdrant_client(config["qdrant_host"], config["qdrant_port"], args.verbose)
 
     if args.all_collections:

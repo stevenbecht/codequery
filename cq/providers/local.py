@@ -93,18 +93,23 @@ class LocalEmbeddingProvider(BaseEmbeddingProvider):
         if not texts:
             return [], 0
         
+        logging.debug(f"Processing {len(texts)} texts for embedding")
+        
         # Safety check: warn about oversized texts and truncate if needed
-        max_length = 510  # Leave room for special tokens
+        # Use 500 to be safe with special tokens
+        max_length = 500
         checked_texts = []
         total_tokens = 0
+        truncated_count = 0
         
         for i, text in enumerate(texts):
             token_count = self.get_token_count(text)
             total_tokens += token_count
             
             if token_count > max_length:
-                logging.warning(f"Text {i+1}/{len(texts)} with {token_count} tokens exceeds model limit of {max_length}. Truncating.")
-                # Truncate the text to fit
+                truncated_count += 1
+                logging.debug(f"Text {i+1}/{len(texts)} has {token_count} tokens, truncating to {max_length}")
+                # Truncate using the tokenizer's built-in truncation
                 tokens = self._tokenizer(
                     text, 
                     max_length=max_length, 
@@ -116,6 +121,9 @@ class LocalEmbeddingProvider(BaseEmbeddingProvider):
                 checked_texts.append(truncated_text)
             else:
                 checked_texts.append(text)
+        
+        if truncated_count > 0:
+            logging.info(f"Truncated {truncated_count} oversized text chunks to fit model limit")
         
         # Generate embeddings with checked texts
         embeddings = self.model.encode(
@@ -146,14 +154,21 @@ class LocalEmbeddingProvider(BaseEmbeddingProvider):
         Returns:
             Number of tokens
         """
-        # Use Codex's efficient approach with return_length
-        enc = self._tokenizer(
-            text,
-            add_special_tokens=True,   # include [CLS]/[SEP]/etc
-            truncation=False,          # measure full length, don't truncate
-            return_length=True         # efficient length retrieval
-        )
-        return enc['length'][0]
+        # Use fast tokenizer backend if available (no warning)
+        if getattr(self._tokenizer, "is_fast", False):
+            # Fast tokenizers have a backend that doesn't emit warnings
+            encoded = self._tokenizer.backend_tokenizer.encode(text, add_special_tokens=True)
+            return len(encoded.ids)
+        
+        # Fallback for slow tokenizers: silence Transformers logging for this call
+        from transformers.utils import logging as hf_logging
+        with hf_logging.verbosity_error():
+            tokens = self._tokenizer.encode(
+                text,
+                add_special_tokens=True,
+                truncation=False,
+            )
+        return len(tokens)
     
     def get_vector_dim(self) -> int:
         """

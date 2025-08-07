@@ -93,9 +93,33 @@ class LocalEmbeddingProvider(BaseEmbeddingProvider):
         if not texts:
             return [], 0
         
-        # Generate embeddings
+        # Safety check: warn about oversized texts and truncate if needed
+        max_length = 510  # Leave room for special tokens
+        checked_texts = []
+        total_tokens = 0
+        
+        for i, text in enumerate(texts):
+            token_count = self.get_token_count(text)
+            total_tokens += token_count
+            
+            if token_count > max_length:
+                logging.warning(f"Text {i+1}/{len(texts)} with {token_count} tokens exceeds model limit of {max_length}. Truncating.")
+                # Truncate the text to fit
+                tokens = self._tokenizer(
+                    text, 
+                    max_length=max_length, 
+                    truncation=True, 
+                    add_special_tokens=True,
+                    return_tensors=None
+                )
+                truncated_text = self._tokenizer.decode(tokens['input_ids'], skip_special_tokens=True)
+                checked_texts.append(truncated_text)
+            else:
+                checked_texts.append(text)
+        
+        # Generate embeddings with checked texts
         embeddings = self.model.encode(
-            texts,
+            checked_texts,
             batch_size=self.batch_size,
             show_progress_bar=False,
             normalize_embeddings=True,  # SBERT models are typically normalized
@@ -108,9 +132,6 @@ class LocalEmbeddingProvider(BaseEmbeddingProvider):
         else:
             # Handle single embedding case
             embeddings = [embedding.tolist() if hasattr(embedding, 'tolist') else list(embedding) for embedding in embeddings]
-        
-        # Count tokens for all texts
-        total_tokens = sum(self.get_token_count(text) for text in texts)
         
         return embeddings, total_tokens
     
